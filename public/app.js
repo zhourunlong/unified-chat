@@ -92,6 +92,10 @@ function getApiKey(providerId) {
   return uiState.vault.providerKeys[providerId] || "";
 }
 
+function hasConfiguredApiKey(providerId) {
+  return getApiKey(providerId).trim().length > 0;
+}
+
 function persistVault() {
   if (!uiState.session) {
     return Promise.resolve();
@@ -254,7 +258,7 @@ function renderSettings() {
       <input
         type="password"
         ${disabled ? "disabled" : ""}
-        placeholder="${escapeHtml(provider.envKeyName)} fallback works too"
+        placeholder="${disabled ? "" : "Required"}"
         value="${escapeHtml(getApiKey(provider.id))}"
       />
     `;
@@ -264,6 +268,7 @@ function renderSettings() {
       input.addEventListener("change", (event) => {
         uiState.vault.providerKeys[provider.id] = event.target.value.trim();
         persistVault();
+        requestRender();
       });
     }
 
@@ -298,16 +303,20 @@ function renderConfig(chat) {
     : efforts[0];
 
   const locked = isChatLocked(chat);
+  const hasApiKey = hasConfiguredApiKey(chat.config.providerId);
   elements.providerSelect.disabled = locked;
   elements.modelSelect.disabled = locked;
   elements.reasoningSelect.disabled = locked;
   elements.chatLockIndicator.textContent = locked ? "Config locked after first turn" : "Config unlocked";
   elements.chatTitle.textContent = chat.title;
   elements.currentUsername.textContent = uiState.session?.username || "";
-  elements.composerMeta.textContent = `Background mode enabled for ${activeModel?.label || "this chat"}.`;
+  elements.composerMeta.textContent = hasApiKey
+    ? `Background mode enabled for ${activeModel?.label || "this chat"}.`
+    : `Configure the ${getProviderById(chat.config.providerId)?.apiKeyLabel || "API key"} in settings to send messages.`;
   elements.cancelButton.hidden = !chat.pendingResponseId;
   elements.cancelButton.disabled = false;
-  elements.sendButton.disabled = Boolean(chat.isSubmitting || chat.pendingResponseId);
+  elements.messageInput.disabled = !hasApiKey;
+  elements.sendButton.disabled = Boolean(!hasApiKey || chat.isSubmitting || chat.pendingResponseId);
 }
 
 function renderMessages(chat) {
@@ -474,7 +483,7 @@ async function sendMessage(event) {
 
   const messageText = elements.messageInput.value.trim();
 
-  if (!messageText || activeChat.isSubmitting || activeChat.pendingResponseId) {
+  if (!hasConfiguredApiKey(activeChat.config.providerId) || !messageText || activeChat.isSubmitting || activeChat.pendingResponseId) {
     return;
   }
 

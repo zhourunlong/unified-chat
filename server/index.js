@@ -4,6 +4,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_CHAT_CONFIG, PROVIDERS } from "../shared/model-catalog.js";
+import { requireConfiguredProviderKey } from "./lib/provider-auth.js";
 import { clearCookie, createHttpError, parseCookies, readJsonBody, sendError, sendJson, serveStaticFile, setCookie } from "./lib/http.js";
 import { createSession, createSessionCookie, destroySession, getSession, updateSession } from "./lib/session-store.js";
 import { loginLocalUser, registerLocalUser, saveUserVault } from "./lib/user-store.js";
@@ -121,7 +122,7 @@ async function handleApiRequest(request, response, pathname) {
 
     const summarizer = getSummarizer(providerId);
     const provider = getProviderHandler(providerId);
-    const apiKey = session.vault?.providerKeys?.[providerId] || "";
+    const apiKey = requireConfiguredProviderKey(providerId, session.vault?.providerKeys?.[providerId]);
     const summary = await provider.createSummaryResponse({
       apiKey,
       body: summarizer.buildRequest(firstUserMessage),
@@ -141,7 +142,7 @@ async function handleApiRequest(request, response, pathname) {
     const body = await readJsonBody(request);
     const providerId = createMatch[1];
     const provider = getProviderHandler(providerId);
-    const apiKey = session.vault?.providerKeys?.[providerId] || "";
+    const apiKey = requireConfiguredProviderKey(providerId, session.vault?.providerKeys?.[providerId]);
     const result = await provider.createResponse({
       apiKey,
       chatConfig: body.chatConfig,
@@ -158,11 +159,12 @@ async function handleApiRequest(request, response, pathname) {
     const body = await readJsonBody(request);
     const providerId = streamMatch[1];
     const provider = getProviderHandler(providerId);
+    const apiKey = requireConfiguredProviderKey(providerId, session.vault?.providerKeys?.[providerId]);
     const abortController = new AbortController();
     request.on("close", () => abortController.abort());
 
     const upstream = await provider.createResponseStream({
-      apiKey: session.vault?.providerKeys?.[providerId] || "",
+      apiKey,
       chatConfig: body.chatConfig,
       message: body.message,
       previousResponseId: body.previousResponseId,
@@ -196,8 +198,9 @@ async function handleApiRequest(request, response, pathname) {
     const providerId = retrieveMatch[1];
     const responseId = retrieveMatch[2];
     const provider = getProviderHandler(providerId);
+    const apiKey = requireConfiguredProviderKey(providerId, session.vault?.providerKeys?.[providerId]);
     const result = await provider.retrieveResponse({
-      apiKey: session.vault?.providerKeys?.[providerId] || "",
+      apiKey,
       responseId,
     });
     sendJson(response, 200, { response: result });
@@ -210,8 +213,9 @@ async function handleApiRequest(request, response, pathname) {
     const providerId = cancelMatch[1];
     const responseId = cancelMatch[2];
     const provider = getProviderHandler(providerId);
+    const apiKey = requireConfiguredProviderKey(providerId, session.vault?.providerKeys?.[providerId]);
     const result = await provider.cancelResponse({
-      apiKey: session.vault?.providerKeys?.[providerId] || "",
+      apiKey,
       responseId,
     });
     sendJson(response, 200, { response: result });

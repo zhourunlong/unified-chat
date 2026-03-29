@@ -19,7 +19,7 @@ Then open `http://localhost:3000`.
 - The local Node server stores encrypted user vault records on disk in `data/vault-store.json` and keeps login state in an HTTP-only cookie-backed persistent session.
 - No plaintext username, password, or API key is written to the vault store. User lookup uses one-way probes derived from the typed username and password, so credential matching does not require decrypting stored usernames or passwords.
 - Each vault payload is encrypted once with a key derived from `username@password`. There is no reversible global vault-encryption layer.
-- API keys can still fall back to environment variables like `OPENAI_API_KEY` if a provider key is not stored in the logged-in vault.
+- API keys must be configured in the logged-in vault before a provider can be used.
 - Claude, Gemini, and Grok are exposed as placeholders in the provider registry so their API modules can be added without replacing the frontend state model.
 
 ## Notes

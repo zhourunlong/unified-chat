@@ -1,14 +1,11 @@
 import { createHttpError } from "../lib/http.js";
+import { requireConfiguredProviderKey } from "../lib/provider-auth.js";
 import { getSystemPrompt } from "../prompts/index.js";
 import { getOpenAISummaryConfig } from "../summarizers/openai.js";
 import { getModelById, getProviderById } from "../../shared/model-catalog.js";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1/responses";
 const NON_TERMINAL_STATUSES = new Set(["queued", "in_progress"]);
-
-function getApiKey(apiKey) {
-  return apiKey || process.env.OPENAI_API_KEY || "";
-}
 
 function buildHeaders(apiKey) {
   return {
@@ -27,16 +24,12 @@ async function parseOpenAIError(response) {
 }
 
 async function openaiFetch(pathname, options, apiKey) {
-  const resolvedApiKey = getApiKey(apiKey);
-
-  if (!resolvedApiKey) {
-    throw createHttpError(400, "Missing OpenAI API key. Add one in settings or set OPENAI_API_KEY.");
-  }
+  const configuredApiKey = requireConfiguredProviderKey("openai", apiKey);
 
   const response = await fetch(`${OPENAI_BASE_URL}${pathname}`, {
     ...options,
     headers: {
-      ...buildHeaders(resolvedApiKey),
+      ...buildHeaders(configuredApiKey),
       ...(options.headers || {}),
     },
   });
@@ -49,16 +42,12 @@ async function openaiFetch(pathname, options, apiKey) {
 }
 
 async function openaiFetchRaw(pathname, options, apiKey) {
-  const resolvedApiKey = getApiKey(apiKey);
-
-  if (!resolvedApiKey) {
-    throw createHttpError(400, "Missing OpenAI API key. Add one in settings or set OPENAI_API_KEY.");
-  }
+  const configuredApiKey = requireConfiguredProviderKey("openai", apiKey);
 
   const response = await fetch(`${OPENAI_BASE_URL}${pathname}`, {
     ...options,
     headers: {
-      ...buildHeaders(resolvedApiKey),
+      ...buildHeaders(configuredApiKey),
       ...(options.headers || {}),
     },
   });

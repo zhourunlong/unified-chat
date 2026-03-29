@@ -5,7 +5,6 @@ export const PROVIDERS = [
     tagline: "Responses API with background mode",
     status: "active",
     apiKeyLabel: "OpenAI API key",
-    envKeyName: "OPENAI_API_KEY",
     models: [
       {
         id: "gpt-5.4",
@@ -39,7 +38,6 @@ export const PROVIDERS = [
     tagline: "Provider module placeholder",
     status: "coming_soon",
     apiKeyLabel: "Anthropic API key",
-    envKeyName: "ANTHROPIC_API_KEY",
     models: [],
   },
   {
@@ -48,7 +46,6 @@ export const PROVIDERS = [
     tagline: "Provider module placeholder",
     status: "coming_soon",
     apiKeyLabel: "Google AI API key",
-    envKeyName: "GEMINI_API_KEY",
     models: [],
   },
   {
@@ -57,7 +54,6 @@ export const PROVIDERS = [
     tagline: "Provider module placeholder",
     status: "coming_soon",
     apiKeyLabel: "xAI API key",
-    envKeyName: "XAI_API_KEY",
     models: [],
   },
 ];
