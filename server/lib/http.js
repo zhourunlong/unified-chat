@@ -38,6 +38,47 @@ export function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
+export function parseCookies(request) {
+  const raw = request.headers.cookie || "";
+  const cookies = {};
+
+  for (const entry of raw.split(";")) {
+    const [name, ...rest] = entry.trim().split("=");
+    if (!name) {
+      continue;
+    }
+    cookies[name] = decodeURIComponent(rest.join("="));
+  }
+
+  return cookies;
+}
+
+export function setCookie(response, { name, value, maxAge, httpOnly = true, sameSite = "Strict", path = "/" }) {
+  const parts = [
+    `${name}=${encodeURIComponent(value)}`,
+    `Path=${path}`,
+    `SameSite=${sameSite}`,
+  ];
+
+  if (httpOnly) {
+    parts.push("HttpOnly");
+  }
+
+  if (maxAge !== undefined) {
+    parts.push(`Max-Age=${maxAge}`);
+  }
+
+  response.setHeader("Set-Cookie", parts.join("; "));
+}
+
+export function clearCookie(response, name) {
+  setCookie(response, {
+    maxAge: 0,
+    name,
+    value: "",
+  });
+}
+
 export function sendError(response, statusCode, message, details = null) {
   sendJson(response, statusCode, {
     error: {
@@ -62,7 +103,7 @@ export async function serveStaticFile(response, rootDirectory, requestPath) {
 
     response.writeHead(200, {
       "Content-Type": CONTENT_TYPES[extension] || "application/octet-stream",
-      "Cache-Control": extension === ".html" ? "no-store" : "public, max-age=300",
+      "Cache-Control": "no-store",
     });
     response.end(content);
     return true;

@@ -26,14 +26,40 @@ export async function fetchCatalog() {
   return response.json();
 }
 
+export async function fetchSession() {
+  const response = await fetch("/api/session");
+
+  if (!response.ok) {
+    throw new Error("Failed to load session.");
+  }
+
+  return response.json();
+}
+
+export async function registerUser(body) {
+  return request("/api/auth/register", body);
+}
+
+export async function loginUser(body) {
+  return request("/api/auth/login", body);
+}
+
+export async function logoutUser() {
+  return request("/api/auth/logout", {});
+}
+
+export async function saveVault(vault) {
+  return request("/api/session/vault", { vault });
+}
+
 export async function createProviderResponse(providerId, body) {
   return request(`/api/providers/${providerId}/responses`, body);
 }
 
-export async function retrieveProviderResponse(providerId, responseId, body) {
-  return request(`/api/providers/${providerId}/responses/${responseId}/retrieve`, body);
+export async function retrieveProviderResponse(providerId, responseId) {
+  return request(`/api/providers/${providerId}/responses/${responseId}/retrieve`, {});
 }
 
-export async function cancelProviderResponse(providerId, responseId, body) {
-  return request(`/api/providers/${providerId}/responses/${responseId}/cancel`, body);
+export async function cancelProviderResponse(providerId, responseId) {
+  return request(`/api/providers/${providerId}/responses/${responseId}/cancel`, {});
 }

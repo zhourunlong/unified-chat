@@ -1,10 +1,17 @@
 import { DEFAULT_CHAT_CONFIG, getProviderById } from "../shared/model-catalog.js";
-import { cancelProviderResponse, createProviderResponse, fetchCatalog, retrieveProviderResponse } from "./lib/api.js";
+import {
+  cancelProviderResponse,
+  createProviderResponse,
+  fetchCatalog,
+  fetchSession,
+  loginUser,
+  logoutUser,
+  registerUser,
+  retrieveProviderResponse,
+  saveVault,
+} from "./lib/api.js";
 import { createChat, createEmptyVault, isChatLocked } from "./lib/state.js";
-import { loadDatabase } from "./lib/storage.js";
-import { listUsers, loginUser, persistUserVault, registerUser } from "./lib/user-vault.js";
 
-const database = loadDatabase();
 const pollInFlight = new Set();
 let persistQueue = Promise.resolve();
 let catalog = {
@@ -14,7 +21,7 @@ let catalog = {
 
 const uiState = {
   authMessage: "",
-  authMode: Object.keys(database.users || {}).length > 0 ? "login" : "register",
+  authMode: "login",
   session: null,
   vault: createEmptyVault(),
 };
@@ -32,7 +39,6 @@ const elements = {
   composer: document.querySelector("#composer"),
   composerMeta: document.querySelector("#composer-meta"),
   currentUsername: document.querySelector("#current-username"),
-  knownUsers: document.querySelector("#known-users"),
   loginForm: document.querySelector("#login-form"),
   loginPassword: document.querySelector("#login-password"),
   loginTab: document.querySelector("#login-tab"),
@@ -43,7 +49,6 @@ const elements = {
   messageTemplate: document.querySelector("#message-template"),
   modelSelect: document.querySelector("#model-select"),
   newChatButton: document.querySelector("#new-chat-button"),
-  providerCards: document.querySelector("#provider-cards"),
   providerSelect: document.querySelector("#provider-select"),
   reasoningSelect: document.querySelector("#reasoning-select"),
   registerConfirm: document.querySelector("#register-confirm"),
@@ -59,16 +64,36 @@ const elements = {
   systemPrompt: document.querySelector("#system-prompt"),
 };
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function capitalize(value) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function getModels(providerId) {
+  return getProviderById(providerId)?.models || [];
+}
+
+function getApiKey(providerId) {
+  return uiState.vault.providerKeys[providerId] || "";
+}
+
 function persistVault() {
   if (!uiState.session) {
     return Promise.resolve();
   }
 
   const snapshot = structuredClone(uiState.vault);
-  const { masterKey, userId } = uiState.session;
   persistQueue = persistQueue
     .catch(() => {})
-    .then(() => persistUserVault(database, userId, masterKey, snapshot))
+    .then(() => saveVault(snapshot))
     .catch((error) => {
       uiState.authMessage = error.message || "Failed to save encrypted vault.";
       renderAuth();
@@ -140,27 +165,6 @@ function setActiveChat(chatId) {
   render();
 }
 
-function getModels(providerId) {
-  return getProviderById(providerId)?.models || [];
-}
-
-function getApiKey(providerId) {
-  return uiState.vault.providerKeys[providerId] || "";
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function capitalize(value) {
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
 function buildStatusLabel(message) {
   if (message.error) {
     return "Error";
@@ -179,33 +183,6 @@ function setAuthMode(mode) {
   renderAuth();
 }
 
-function renderKnownUsers() {
-  const users = listUsers(database);
-  elements.knownUsers.replaceChildren();
-
-  if (users.length === 0) {
-    const copy = document.createElement("p");
-    copy.className = "auth-copy";
-    copy.textContent = "No local users yet. Create the first encrypted workspace.";
-    elements.knownUsers.append(copy);
-    return;
-  }
-
-  for (const username of users) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "ghost-button ghost-button--small";
-    button.textContent = username;
-    button.addEventListener("click", () => {
-      uiState.authMode = "login";
-      elements.loginUsername.value = username;
-      elements.loginPassword.focus();
-      renderAuth();
-    });
-    elements.knownUsers.append(button);
-  }
-}
-
 function renderAuth() {
   const loggedIn = Boolean(uiState.session);
   elements.authScreen.classList.toggle("auth-screen--hidden", loggedIn);
@@ -216,14 +193,8 @@ function renderAuth() {
   elements.registerForm.hidden = uiState.authMode !== "register";
   elements.authMessage.textContent = uiState.authMessage;
   elements.authSubtitle.textContent = uiState.authMode === "login"
-    ? "Unlock your local encrypted vault to access provider keys and chats."
-    : "Create a local user. Your vault key is sealed with your password and never leaves this browser.";
-
-  if (!elements.loginUsername.value && database.lastUsername) {
-    elements.loginUsername.value = database.lastUsername;
-  }
-
-  renderKnownUsers();
+    ? "Log in with your username and password. The local server matches a one-way credential probe against encrypted vault records."
+    : "Create a local account. The stored vault record contains no plaintext username, password, or API keys.";
 }
 
 function renderChatList() {
@@ -240,23 +211,6 @@ function renderChatList() {
     `;
     button.addEventListener("click", () => setActiveChat(chat.id));
     elements.chatList.append(button);
-  }
-}
-
-function renderProviderCards() {
-  elements.providerCards.replaceChildren();
-
-  for (const provider of catalog.providers) {
-    const card = document.createElement("article");
-    card.className = "provider-card";
-    card.innerHTML = `
-      <div class="sidebar__heading">
-        <p class="provider-card__title">${escapeHtml(provider.label)}</p>
-        <span class="provider-card__status">${escapeHtml(provider.status.replaceAll("_", " "))}</span>
-      </div>
-      <p class="provider-card__copy">${escapeHtml(provider.tagline)}</p>
-    `;
-    elements.providerCards.append(card);
   }
 }
 
@@ -340,7 +294,7 @@ function renderMessages(chat) {
       <div class="message__meta">
         <span class="message__role">Ready</span>
       </div>
-      <div class="message__body">Your provider keys are encrypted inside this user's local vault. Configure this chat, then send the first turn.</div>
+      <div class="message__body">The local server stores this account in a single encrypted vault derived from your username and password. Configure this chat, then send the first turn.</div>
     `;
     elements.messages.append(emptyState);
     return;
@@ -374,7 +328,6 @@ function renderApp() {
   }
 
   renderChatList();
-  renderProviderCards();
   renderSettings();
   renderConfig(activeChat);
   renderMessages(activeChat);
@@ -457,8 +410,6 @@ async function sendMessage(event) {
     return;
   }
 
-  const providerId = activeChat.config.providerId;
-  const apiKey = getApiKey(providerId);
   const messageText = elements.messageInput.value.trim();
 
   if (!messageText || activeChat.isSubmitting || activeChat.pendingResponseId) {
@@ -494,8 +445,7 @@ async function sendMessage(event) {
   elements.messageInput.value = "";
 
   try {
-    const payload = await createProviderResponse(providerId, {
-      apiKey,
+    const payload = await createProviderResponse(activeChat.config.providerId, {
       chatConfig: activeChat.config,
       message: messageText,
       previousResponseId: activeChat.lastResponseId,
@@ -537,9 +487,7 @@ async function pollPendingChats() {
 
     pollInFlight.add(requestKey);
     try {
-      const payload = await retrieveProviderResponse(chat.config.providerId, chat.pendingResponseId, {
-        apiKey: getApiKey(chat.config.providerId),
-      });
+      const payload = await retrieveProviderResponse(chat.config.providerId, chat.pendingResponseId);
 
       updateChat(chat.id, (currentChat) => {
         const pendingAssistant = [...currentChat.messages]
@@ -581,9 +529,7 @@ async function cancelActiveRun() {
   elements.cancelButton.disabled = true;
 
   try {
-    const payload = await cancelProviderResponse(activeChat.config.providerId, activeChat.pendingResponseId, {
-      apiKey: getApiKey(activeChat.config.providerId),
-    });
+    const payload = await cancelProviderResponse(activeChat.config.providerId, activeChat.pendingResponseId);
 
     updateChat(activeChat.id, (chat) => {
       const pendingAssistant = [...chat.messages]
@@ -615,6 +561,18 @@ async function cancelActiveRun() {
   }
 }
 
+function applyAuthenticatedState(payload) {
+  uiState.session = payload.authenticated
+    ? {
+        username: payload.username,
+      }
+    : null;
+  uiState.vault = payload.authenticated ? payload.vault || createEmptyVault() : createEmptyVault();
+  uiState.authMessage = "";
+  normalizeVault();
+  render();
+}
+
 async function handleRegister(event) {
   event.preventDefault();
 
@@ -629,14 +587,10 @@ async function handleRegister(event) {
   }
 
   try {
-    const { session, vault } = await registerUser(database, { username, password });
-    uiState.session = session;
-    uiState.vault = vault;
-    uiState.authMessage = "";
-    normalizeVault();
+    const payload = await registerUser({ username, password });
+    applyAuthenticatedState(payload);
     elements.registerForm.reset();
     elements.loginPassword.value = "";
-    render();
     pollPendingChats();
   } catch (error) {
     uiState.authMessage = error.message;
@@ -651,13 +605,9 @@ async function handleLogin(event) {
   const password = elements.loginPassword.value;
 
   try {
-    const { session, vault } = await loginUser(database, { username, password });
-    uiState.session = session;
-    uiState.vault = vault;
-    uiState.authMessage = "";
-    normalizeVault();
+    const payload = await loginUser({ username, password });
+    applyAuthenticatedState(payload);
     elements.loginPassword.value = "";
-    render();
     pollPendingChats();
   } catch (error) {
     uiState.authMessage = error.message;
@@ -667,6 +617,7 @@ async function handleLogin(event) {
 
 async function handleLogout() {
   await persistVault().catch(() => {});
+  await logoutUser().catch(() => {});
   uiState.session = null;
   uiState.vault = createEmptyVault();
   uiState.authMode = "login";
@@ -719,7 +670,14 @@ function attachEventListeners() {
 }
 
 async function bootstrap() {
-  catalog = await fetchCatalog();
+  const [catalogPayload, sessionPayload] = await Promise.all([
+    fetchCatalog(),
+    fetchSession(),
+  ]);
+  catalog = catalogPayload;
+  if (sessionPayload.authenticated) {
+    applyAuthenticatedState(sessionPayload);
+  }
   attachEventListeners();
   render();
   window.setInterval(pollPendingChats, 2500);

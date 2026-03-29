@@ -15,11 +15,13 @@ Then open `http://localhost:3000`.
 - Provider and model selection happens at the chat level. Once the first turn is sent, the chat config locks to preserve a single model lane for that conversation.
 - GPT chats call `POST /v1/responses` with `background: true`, `store: true`, and `previous_response_id` for multi-turn conversation state.
 - Users must register and log in locally before using the app.
-- Each user's chats and API keys are stored inside that user's encrypted local vault. The vault key is sealed with the login password and only decrypted in memory after login.
+- The local Node server stores encrypted user vault records on disk in `data/vault-store.json` and keeps login state in an HTTP-only cookie-backed persistent session.
+- No plaintext username, password, or API key is written to the vault store. User lookup uses one-way probes derived from the typed username and password, so credential matching does not require decrypting stored usernames or passwords.
+- Each vault payload is encrypted once with a key derived from `username@password`. There is no reversible global vault-encryption layer.
 - API keys can still fall back to environment variables like `OPENAI_API_KEY` if a provider key is not stored in the logged-in vault.
 - Claude, Gemini, and Grok are exposed as placeholders in the provider registry so their API modules can be added without replacing the frontend state model.
 
 ## Notes
 
-- Usernames are stored as local identifiers, but passwords are not stored in plaintext. The browser keeps encrypted credential material plus the encrypted vault in local storage.
-- The local proxy does not persist decrypted user keys or transcripts on disk.
+- The browser no longer stores user vaults in local storage.
+- The local proxy does not persist decrypted user keys or transcripts in the browser. Decrypted vault material is retained in the server-side session until logout or session expiry.

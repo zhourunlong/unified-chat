@@ -93,7 +93,6 @@ textarea {
 }
 
 .auth-tabs,
-.known-users,
 .account-pill {
   display: flex;
   gap: 10px;
@@ -121,6 +120,10 @@ textarea {
 .auth-form {
   display: grid;
   gap: 14px;
+}
+
+.auth-form[hidden] {
+  display: none !important;
 }
 
 .sidebar,
@@ -224,22 +227,19 @@ textarea {
 
 .sidebar__count,
 .lock-pill,
-.provider-card__status,
 .message__status {
   color: var(--muted);
   font-size: 0.82rem;
 }
 
 .chat-list,
-.provider-cards,
 .settings-fields {
   display: grid;
   gap: 12px;
   margin-top: 14px;
 }
 
-.chat-list__item,
-.provider-card {
+.chat-list__item {
   width: 100%;
   text-align: left;
   background: var(--bg-strong);
@@ -258,13 +258,12 @@ textarea {
 }
 
 .chat-list__title,
-.provider-card__title {
+.chat-list__title {
   margin: 0;
   font-weight: 700;
 }
 
 .chat-list__meta,
-.provider-card__copy,
 .settings-panel__note,
 .composer__meta {
   margin: 6px 0 0;

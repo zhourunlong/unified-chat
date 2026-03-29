@@ -2,7 +2,9 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_CHAT_CONFIG, PROVIDERS } from "../shared/model-catalog.js";
-import { createHttpError, readJsonBody, sendError, sendJson, serveStaticFile } from "./lib/http.js";
+import { clearCookie, createHttpError, parseCookies, readJsonBody, sendError, sendJson, serveStaticFile, setCookie } from "./lib/http.js";
+import { createSession, createSessionCookie, destroySession, getSession, updateSession } from "./lib/session-store.js";
+import { loginLocalUser, registerLocalUser, saveUserVault } from "./lib/user-store.js";
 import { getProviderHandler } from "./providers/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -19,19 +21,100 @@ function buildCatalog() {
   };
 }
 
+function serializeSession(session) {
+  return {
+    authenticated: true,
+    username: session.username,
+    vault: session.vault,
+  };
+}
+
+async function requireSession(request) {
+  const cookies = parseCookies(request);
+  const session = await getSession(cookies.uc_session);
+
+  if (!session) {
+    throw createHttpError(401, "Log in to use the local encrypted vault.");
+  }
+
+  return session;
+}
+
 async function handleApiRequest(request, response, pathname) {
   if (request.method === "GET" && pathname === "/api/catalog") {
     sendJson(response, 200, buildCatalog());
     return;
   }
 
+  if (request.method === "GET" && pathname === "/api/session") {
+    const cookies = parseCookies(request);
+    const session = await getSession(cookies.uc_session);
+
+    if (!session) {
+      clearCookie(response, "uc_session");
+      sendJson(response, 200, { authenticated: false });
+      return;
+    }
+
+    setCookie(response, createSessionCookie(session));
+    sendJson(response, 200, serializeSession(session));
+    return;
+  }
+
+  if (request.method === "POST" && pathname === "/api/auth/register") {
+    const body = await readJsonBody(request);
+    const localUser = await registerLocalUser({
+      password: body.password,
+      username: body.username,
+    });
+    const session = await createSession(localUser);
+    setCookie(response, createSessionCookie(session));
+    sendJson(response, 200, serializeSession(session));
+    return;
+  }
+
+  if (request.method === "POST" && pathname === "/api/auth/login") {
+    const body = await readJsonBody(request);
+    const localUser = await loginLocalUser({
+      password: body.password,
+      username: body.username,
+    });
+    const session = await createSession(localUser);
+    setCookie(response, createSessionCookie(session));
+    sendJson(response, 200, serializeSession(session));
+    return;
+  }
+
+  if (request.method === "POST" && pathname === "/api/auth/logout") {
+    const cookies = parseCookies(request);
+    await destroySession(cookies.uc_session);
+    clearCookie(response, "uc_session");
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+
+  if (request.method === "POST" && pathname === "/api/session/vault") {
+    const session = await requireSession(request);
+    const body = await readJsonBody(request);
+    session.vault = await saveUserVault({
+      recordId: session.recordId,
+      userVaultKey: session.userVaultKey,
+      vault: body.vault,
+    });
+    await updateSession(session);
+    sendJson(response, 200, { ok: true });
+    return;
+  }
+
   const createMatch = pathname.match(/^\/api\/providers\/([^/]+)\/responses$/);
   if (request.method === "POST" && createMatch) {
+    const session = await requireSession(request);
     const body = await readJsonBody(request);
     const providerId = createMatch[1];
     const provider = getProviderHandler(providerId);
+    const apiKey = session.vault?.providerKeys?.[providerId] || "";
     const result = await provider.createResponse({
-      apiKey: body.apiKey,
+      apiKey,
       chatConfig: body.chatConfig,
       message: body.message,
       previousResponseId: body.previousResponseId,
@@ -42,12 +125,12 @@ async function handleApiRequest(request, response, pathname) {
 
   const retrieveMatch = pathname.match(/^\/api\/providers\/([^/]+)\/responses\/([^/]+)\/retrieve$/);
   if (request.method === "POST" && retrieveMatch) {
-    const body = await readJsonBody(request);
+    const session = await requireSession(request);
     const providerId = retrieveMatch[1];
     const responseId = retrieveMatch[2];
     const provider = getProviderHandler(providerId);
     const result = await provider.retrieveResponse({
-      apiKey: body.apiKey,
+      apiKey: session.vault?.providerKeys?.[providerId] || "",
       responseId,
     });
     sendJson(response, 200, { response: result });
@@ -56,12 +139,12 @@ async function handleApiRequest(request, response, pathname) {
 
   const cancelMatch = pathname.match(/^\/api\/providers\/([^/]+)\/responses\/([^/]+)\/cancel$/);
   if (request.method === "POST" && cancelMatch) {
-    const body = await readJsonBody(request);
+    const session = await requireSession(request);
     const providerId = cancelMatch[1];
     const responseId = cancelMatch[2];
     const provider = getProviderHandler(providerId);
     const result = await provider.cancelResponse({
-      apiKey: body.apiKey,
+      apiKey: session.vault?.providerKeys?.[providerId] || "",
       responseId,
     });
     sendJson(response, 200, { response: result });
