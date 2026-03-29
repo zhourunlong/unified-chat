@@ -1,6 +1,6 @@
 import { getOpenAISystemPrompt } from "../prompts/openai.js";
 
-const SUMMARY_MODEL_ID = "gpt-5-nano";
+const SUMMARY_MODEL_ID = "gpt-5.4-nano";
 const SUMMARY_PROMPT = "Summarize a topic for the following message in 5 words. Output only the topic content.\n\n----- Message -----\n";
 
 function normalizeTopic(text) {
@@ -14,7 +14,7 @@ function normalizeTopic(text) {
 export function getOpenAISummaryConfig() {
   return {
     modelId: SUMMARY_MODEL_ID,
-    reasoningEffort: "minimal",
+    reasoningEffort: "none",
   };
 }
 
@@ -38,7 +38,7 @@ export function buildOpenAISummaryRequest(firstUserMessage) {
     ],
     model: SUMMARY_MODEL_ID,
     reasoning: {
-      effort: "minimal",
+      effort: "none",
     },
     store: false,
   };

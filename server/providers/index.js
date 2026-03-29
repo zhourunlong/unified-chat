@@ -1,8 +1,8 @@
 import { createHttpError } from "../lib/http.js";
-import * as gptProvider from "./gpt.js";
+import * as openaiProvider from "./openai.js";
 
 const PROVIDER_HANDLERS = {
-  openai: gptProvider,
+  openai: openaiProvider,
 };
 
 export function getProviderHandler(providerId) {
