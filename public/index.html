@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Unified Chat</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <div class="sidebar__brand">
+          <div>
+            <p class="eyebrow">Unified Chat</p>
+            <h1>Model switchboard</h1>
+          </div>
+          <button id="settings-toggle" class="ghost-button" type="button">Keys</button>
+        </div>
+
+        <button id="new-chat-button" class="primary-button" type="button">New chat</button>
+
+        <section class="sidebar__section">
+          <div class="sidebar__heading">
+            <h2>Chats</h2>
+            <span id="chat-count" class="sidebar__count">0</span>
+          </div>
+          <div id="chat-list" class="chat-list"></div>
+        </section>
+
+        <section class="sidebar__section">
+          <div class="sidebar__heading">
+            <h2>Providers</h2>
+          </div>
+          <div id="provider-cards" class="provider-cards"></div>
+        </section>
+      </aside>
+
+      <main class="workspace">
+        <header class="workspace__header">
+          <div>
+            <p class="eyebrow">Per-chat configuration</p>
+            <h2 id="chat-title">New chat</h2>
+          </div>
+          <div id="chat-lock-indicator" class="lock-pill">Config unlocked</div>
+        </header>
+
+        <section class="config-panel">
+          <label class="field">
+            <span>Provider</span>
+            <select id="provider-select"></select>
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <select id="model-select"></select>
+          </label>
+          <label class="field">
+            <span>Thinking strength</span>
+            <select id="reasoning-select"></select>
+          </label>
+          <label class="field field--wide">
+            <span>System prompt</span>
+            <textarea id="system-prompt" rows="4" placeholder="Optional chat-level instructions"></textarea>
+          </label>
+        </section>
+
+        <section id="messages" class="messages"></section>
+
+        <form id="composer" class="composer">
+          <textarea id="message-input" rows="3" placeholder="Send a message"></textarea>
+          <div class="composer__actions">
+            <p id="composer-meta" class="composer__meta">Background mode is enabled for GPT chats.</p>
+            <div class="composer__buttons">
+              <button id="cancel-button" class="ghost-button" type="button" hidden>Cancel run</button>
+              <button id="send-button" class="primary-button" type="submit">Send</button>
+            </div>
+          </div>
+        </form>
+      </main>
+
+      <aside id="settings-panel" class="settings-panel settings-panel--hidden">
+        <div class="settings-panel__header">
+          <div>
+            <p class="eyebrow">Local settings</p>
+            <h2>API keys</h2>
+          </div>
+          <button id="settings-close" class="ghost-button" type="button">Close</button>
+        </div>
+        <p class="settings-panel__note">
+          Keys stay in this browser's local storage and are only sent to the local proxy when a request is made.
+        </p>
+        <div id="settings-fields" class="settings-fields"></div>
+      </aside>
+    </div>
+
+    <template id="message-template">
+      <article class="message">
+        <div class="message__meta">
+          <span class="message__role"></span>
+          <span class="message__status"></span>
+        </div>
+        <div class="message__body"></div>
+      </article>
+    </template>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
