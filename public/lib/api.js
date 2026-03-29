@@ -1,3 +1,23 @@
+async function parseErrorResponse(response) {
+  const contentType = response.headers.get("content-type") || "";
+
+  if (contentType.includes("application/json")) {
+    try {
+      const payload = await response.json();
+      return payload?.error?.message || "Request failed.";
+    } catch {
+      return "Request failed.";
+    }
+  }
+
+  try {
+    const text = await response.text();
+    return text || "Request failed.";
+  } catch {
+    return "Request failed.";
+  }
+}
+
 async function request(path, body) {
   const response = await fetch(path, {
     method: "POST",
@@ -7,13 +27,11 @@ async function request(path, body) {
     body: JSON.stringify(body),
   });
 
-  const payload = await response.json();
-
   if (!response.ok) {
-    throw new Error(payload?.error?.message || "Request failed.");
+    throw new Error(await parseErrorResponse(response));
   }
 
-  return payload;
+  return response.json();
 }
 
 export async function fetchCatalog() {
@@ -52,8 +70,29 @@ export async function saveVault(vault) {
   return request("/api/session/vault", { vault });
 }
 
+export async function summarizeChatTitle(body) {
+  return request("/api/chats/summarize-title", body);
+}
+
 export async function createProviderResponse(providerId, body) {
   return request(`/api/providers/${providerId}/responses`, body);
+}
+
+export async function createProviderResponseStream(providerId, body, signal) {
+  const response = await fetch(`/api/providers/${providerId}/responses/stream`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(await parseErrorResponse(response));
+  }
+
+  return response;
 }
 
 export async function retrieveProviderResponse(providerId, responseId) {

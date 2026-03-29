@@ -1,11 +1,14 @@
 import http from "node:http";
 import path from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_CHAT_CONFIG, PROVIDERS } from "../shared/model-catalog.js";
 import { clearCookie, createHttpError, parseCookies, readJsonBody, sendError, sendJson, serveStaticFile, setCookie } from "./lib/http.js";
 import { createSession, createSessionCookie, destroySession, getSession, updateSession } from "./lib/session-store.js";
 import { loginLocalUser, registerLocalUser, saveUserVault } from "./lib/user-store.js";
 import { getProviderHandler } from "./providers/index.js";
+import { getSummarizer } from "./summarizers/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -106,6 +109,32 @@ async function handleApiRequest(request, response, pathname) {
     return;
   }
 
+  if (request.method === "POST" && pathname === "/api/chats/summarize-title") {
+    const session = await requireSession(request);
+    const body = await readJsonBody(request);
+    const providerId = body.providerId;
+    const firstUserMessage = String(body.firstUserMessage || "").trim();
+
+    if (!firstUserMessage) {
+      throw createHttpError(400, "First user message is required.");
+    }
+
+    const summarizer = getSummarizer(providerId);
+    const provider = getProviderHandler(providerId);
+    const apiKey = session.vault?.providerKeys?.[providerId] || "";
+    const summary = await provider.createSummaryResponse({
+      apiKey,
+      body: summarizer.buildRequest(firstUserMessage),
+    });
+
+    sendJson(response, 200, {
+      modelId: summarizer.config.modelId,
+      reasoningEffort: summarizer.config.reasoningEffort,
+      title: summarizer.normalizeTitle(summary.text),
+    });
+    return;
+  }
+
   const createMatch = pathname.match(/^\/api\/providers\/([^/]+)\/responses$/);
   if (request.method === "POST" && createMatch) {
     const session = await requireSession(request);
@@ -120,6 +149,44 @@ async function handleApiRequest(request, response, pathname) {
       previousResponseId: body.previousResponseId,
     });
     sendJson(response, 200, { response: result });
+    return;
+  }
+
+  const streamMatch = pathname.match(/^\/api\/providers\/([^/]+)\/responses\/stream$/);
+  if (request.method === "POST" && streamMatch) {
+    const session = await requireSession(request);
+    const body = await readJsonBody(request);
+    const providerId = streamMatch[1];
+    const provider = getProviderHandler(providerId);
+    const abortController = new AbortController();
+    request.on("close", () => abortController.abort());
+
+    const upstream = await provider.createResponseStream({
+      apiKey: session.vault?.providerKeys?.[providerId] || "",
+      chatConfig: body.chatConfig,
+      message: body.message,
+      previousResponseId: body.previousResponseId,
+      signal: abortController.signal,
+    });
+
+    if (!upstream.body) {
+      throw createHttpError(502, "Provider stream did not return a body.");
+    }
+
+    response.writeHead(200, {
+      "Content-Type": upstream.headers.get("content-type") || "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-store",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    });
+
+    try {
+      await pipeline(Readable.fromWeb(upstream.body), response);
+    } catch (error) {
+      if (error?.name !== "AbortError" && !response.writableEnded) {
+        response.destroy(error);
+      }
+    }
     return;
   }
 

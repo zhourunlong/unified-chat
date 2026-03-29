@@ -1,7 +1,7 @@
 import { DEFAULT_CHAT_CONFIG, getProviderById } from "../shared/model-catalog.js";
 import {
   cancelProviderResponse,
-  createProviderResponse,
+  createProviderResponseStream,
   fetchCatalog,
   fetchSession,
   loginUser,
@@ -9,10 +9,16 @@ import {
   registerUser,
   retrieveProviderResponse,
   saveVault,
+  summarizeChatTitle,
 } from "./lib/api.js";
+import { renderMessageContent } from "./lib/markdown.js";
+import { consumeProviderStream } from "./lib/response-stream.js";
 import { createChat, createEmptyVault, isChatLocked } from "./lib/state.js";
 
 const pollInFlight = new Set();
+const streamInFlight = new Set();
+const streamControllers = new Map();
+let renderQueued = false;
 let persistQueue = Promise.resolve();
 let catalog = {
   providers: [],
@@ -57,6 +63,8 @@ const elements = {
   registerTab: document.querySelector("#register-tab"),
   registerUsername: document.querySelector("#register-username"),
   sendButton: document.querySelector("#send-button"),
+  markdownItScript: document.querySelector("#markdown-it-script"),
+  katexScript: document.querySelector("#katex-script"),
   settingsClose: document.querySelector("#settings-close"),
   settingsFields: document.querySelector("#settings-fields"),
   settingsPanel: document.querySelector("#settings-panel"),
@@ -144,7 +152,19 @@ function getActiveChat() {
   return uiState.vault.chats.find((chat) => chat.id === uiState.vault.activeChatId) || null;
 }
 
-function updateChat(chatId, updater) {
+function requestRender() {
+  if (renderQueued) {
+    return;
+  }
+
+  renderQueued = true;
+  window.requestAnimationFrame(() => {
+    renderQueued = false;
+    render();
+  });
+}
+
+function mutateChat(chatId, updater, { persist = true, render: shouldRender = true } = {}) {
   const index = uiState.vault.chats.findIndex((chat) => chat.id === chatId);
 
   if (index === -1) {
@@ -154,8 +174,18 @@ function updateChat(chatId, updater) {
   const nextChat = updater(structuredClone(uiState.vault.chats[index]));
   nextChat.updatedAt = new Date().toISOString();
   uiState.vault.chats[index] = nextChat;
-  persistVault();
-  render();
+
+  if (persist) {
+    persistVault();
+  }
+
+  if (shouldRender) {
+    requestRender();
+  }
+}
+
+function updateChat(chatId, updater) {
+  mutateChat(chatId, updater);
 }
 
 function setActiveChat(chatId) {
@@ -292,7 +322,28 @@ function renderMessages(chat) {
     }
     fragment.querySelector(".message__role").textContent = capitalize(message.role);
     fragment.querySelector(".message__status").textContent = buildStatusLabel(message);
-    fragment.querySelector(".message__body").textContent = message.error || message.text || "";
+    const messageBody = fragment.querySelector(".message__body");
+    messageBody.innerHTML = renderMessageContent(message.error || message.text || "");
+
+    const shouldShowReasoning = message.role === "assistant" && (
+      message.reasoningSummary ||
+      message.status === "queued" ||
+      message.status === "in_progress"
+    );
+
+    if (shouldShowReasoning) {
+      const reasoningDetails = document.createElement("details");
+      reasoningDetails.className = "message__reasoning";
+      reasoningDetails.open = Boolean(message.reasoningSummary);
+      reasoningDetails.innerHTML = `
+        <summary>Reasoning summary</summary>
+        <div class="message__reasoning-body${message.reasoningSummary ? "" : " message__reasoning-body--pending"}">
+          ${message.reasoningSummary ? renderMessageContent(message.reasoningSummary) : "Waiting for reasoning summary..."}
+        </div>
+      `;
+      messageBody.prepend(reasoningDetails);
+    }
+
     elements.messages.append(fragment);
   }
 
@@ -355,6 +406,34 @@ function createNewChat() {
   elements.messageInput.focus();
 }
 
+async function summarizeTitleForChat(chatId, providerId, firstUserMessage) {
+  try {
+    const payload = await summarizeChatTitle({
+      firstUserMessage,
+      providerId,
+    });
+
+    if (!payload.title) {
+      return;
+    }
+
+    updateChat(chatId, (chat) => {
+      const firstUserEntry = chat.messages.find((message) => message.role === "user");
+      if (!firstUserEntry || firstUserEntry.text !== firstUserMessage) {
+        return chat;
+      }
+
+      if (chat.title === "New chat") {
+        chat.title = payload.title;
+      }
+
+      return chat;
+    });
+  } catch {
+    // Title summarization is best-effort and should not affect the main chat flow.
+  }
+}
+
 function setPendingAssistant(chat, responseId) {
   chat.pendingResponseId = responseId;
 }
@@ -372,6 +451,7 @@ function applyProviderResponse(chat, placeholderMessageId, providerResponse) {
   message.responseId = providerResponse.id;
   message.status = providerResponse.status;
   message.text = providerResponse.text || message.text;
+  message.reasoningSummary = providerResponse.reasoningSummary || message.reasoningSummary || "";
   message.error = providerResponse.error?.message || null;
 
   if (providerResponse.isTerminal) {
@@ -409,36 +489,61 @@ async function sendMessage(event) {
     id: crypto.randomUUID(),
     role: "assistant",
     text: "",
+    reasoningSummary: "",
     status: "queued",
     error: null,
     responseId: null,
     createdAt: new Date().toISOString(),
   };
+  const shouldSummarizeTitle = !activeChat.messages.some((message) => message.role === "user");
 
   updateChat(activeChat.id, (chat) => {
-    if (chat.title === "New chat") {
-      chat.title = messageText.slice(0, 40);
-    }
     chat.isSubmitting = true;
     chat.messages.push(userMessage, assistantMessage);
     return chat;
   });
 
+  if (shouldSummarizeTitle) {
+    void summarizeTitleForChat(activeChat.id, activeChat.config.providerId, messageText);
+  }
+
   elements.messageInput.value = "";
 
+  const streamController = new AbortController();
+  streamInFlight.add(activeChat.id);
+  streamControllers.set(activeChat.id, streamController);
+
   try {
-    const payload = await createProviderResponse(activeChat.config.providerId, {
+    const streamResponse = await createProviderResponseStream(activeChat.config.providerId, {
       chatConfig: activeChat.config,
       message: messageText,
       previousResponseId: activeChat.lastResponseId,
+    }, streamController.signal);
+
+    const finalResponse = await consumeProviderStream(streamResponse, {
+      onUpdate(providerResponse, { persist }) {
+        mutateChat(activeChat.id, (chat) => {
+          applyProviderResponse(chat, assistantMessage.id, providerResponse);
+          chat.isSubmitting = true;
+          return chat;
+        }, { persist, render: true });
+      },
     });
 
     updateChat(activeChat.id, (chat) => {
       chat.isSubmitting = false;
-      applyProviderResponse(chat, assistantMessage.id, payload.response);
+      applyProviderResponse(chat, assistantMessage.id, finalResponse);
       return chat;
     });
   } catch (error) {
+    if (streamController.signal.aborted) {
+      updateChat(activeChat.id, (chat) => {
+        chat.isSubmitting = false;
+        return chat;
+      });
+      return;
+    }
+
     updateChat(activeChat.id, (chat) => {
       chat.isSubmitting = false;
       const message = chat.messages.find((entry) => entry.id === assistantMessage.id);
@@ -449,6 +554,9 @@ async function sendMessage(event) {
       clearPendingAssistant(chat);
       return chat;
     });
+  } finally {
+    streamInFlight.delete(activeChat.id);
+    streamControllers.delete(activeChat.id);
   }
 }
 
@@ -459,6 +567,10 @@ async function pollPendingChats() {
 
   for (const chat of uiState.vault.chats) {
     if (!chat.pendingResponseId) {
+      continue;
+    }
+
+    if (streamInFlight.has(chat.id)) {
       continue;
     }
 
@@ -539,6 +651,7 @@ async function cancelActiveRun() {
       return chat;
     });
   } finally {
+    streamControllers.get(activeChat.id)?.abort();
     elements.cancelButton.disabled = false;
   }
 }
@@ -598,6 +711,11 @@ async function handleLogin(event) {
 }
 
 async function handleLogout() {
+  for (const controller of streamControllers.values()) {
+    controller.abort();
+  }
+  streamControllers.clear();
+  streamInFlight.clear();
   await persistVault().catch(() => {});
   await logoutUser().catch(() => {});
   uiState.session = null;
@@ -608,6 +726,8 @@ async function handleLogout() {
 }
 
 function attachEventListeners() {
+  elements.markdownItScript?.addEventListener("load", render);
+  elements.katexScript?.addEventListener("load", render);
   elements.loginTab.addEventListener("click", () => setAuthMode("login"));
   elements.registerTab.addEventListener("click", () => setAuthMode("register"));
   elements.loginForm.addEventListener("submit", handleLogin);
