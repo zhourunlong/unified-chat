@@ -1,10 +1,14 @@
-import { DEFAULT_CHAT_CONFIG } from "/shared/model-catalog.js";
+import { DEFAULT_CHAT_CONFIG } from "../../shared/model-catalog.js";
 
-export const DEFAULT_APP_STATE = {
+export const DEFAULT_VAULT_STATE = {
   providerKeys: {},
   chats: [],
   activeChatId: null,
 };
+
+export function createEmptyVault() {
+  return structuredClone(DEFAULT_VAULT_STATE);
+}
 
 export function createChat(config = {}) {
   return {

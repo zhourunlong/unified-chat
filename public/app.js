@@ -1,16 +1,29 @@
-import { DEFAULT_CHAT_CONFIG, getProviderById } from "/shared/model-catalog.js";
+import { DEFAULT_CHAT_CONFIG, getProviderById } from "../shared/model-catalog.js";
 import { cancelProviderResponse, createProviderResponse, fetchCatalog, retrieveProviderResponse } from "./lib/api.js";
-import { DEFAULT_APP_STATE, createChat, isChatLocked } from "./lib/state.js";
-import { loadState, saveState } from "./lib/storage.js";
+import { createChat, createEmptyVault, isChatLocked } from "./lib/state.js";
+import { loadDatabase } from "./lib/storage.js";
+import { listUsers, loginUser, persistUserVault, registerUser } from "./lib/user-vault.js";
 
-const state = loadState(DEFAULT_APP_STATE);
+const database = loadDatabase();
 const pollInFlight = new Set();
+let persistQueue = Promise.resolve();
 let catalog = {
   providers: [],
   defaultChatConfig: DEFAULT_CHAT_CONFIG,
 };
 
+const uiState = {
+  authMessage: "",
+  authMode: Object.keys(database.users || {}).length > 0 ? "login" : "register",
+  session: null,
+  vault: createEmptyVault(),
+};
+
 const elements = {
+  appShell: document.querySelector("#app-shell"),
+  authMessage: document.querySelector("#auth-message"),
+  authScreen: document.querySelector("#auth-screen"),
+  authSubtitle: document.querySelector("#auth-subtitle"),
   cancelButton: document.querySelector("#cancel-button"),
   chatCount: document.querySelector("#chat-count"),
   chatList: document.querySelector("#chat-list"),
@@ -18,6 +31,13 @@ const elements = {
   chatTitle: document.querySelector("#chat-title"),
   composer: document.querySelector("#composer"),
   composerMeta: document.querySelector("#composer-meta"),
+  currentUsername: document.querySelector("#current-username"),
+  knownUsers: document.querySelector("#known-users"),
+  loginForm: document.querySelector("#login-form"),
+  loginPassword: document.querySelector("#login-password"),
+  loginTab: document.querySelector("#login-tab"),
+  loginUsername: document.querySelector("#login-username"),
+  logoutButton: document.querySelector("#logout-button"),
   messageInput: document.querySelector("#message-input"),
   messages: document.querySelector("#messages"),
   messageTemplate: document.querySelector("#message-template"),
@@ -26,6 +46,11 @@ const elements = {
   providerCards: document.querySelector("#provider-cards"),
   providerSelect: document.querySelector("#provider-select"),
   reasoningSelect: document.querySelector("#reasoning-select"),
+  registerConfirm: document.querySelector("#register-confirm"),
+  registerForm: document.querySelector("#register-form"),
+  registerPassword: document.querySelector("#register-password"),
+  registerTab: document.querySelector("#register-tab"),
+  registerUsername: document.querySelector("#register-username"),
   sendButton: document.querySelector("#send-button"),
   settingsClose: document.querySelector("#settings-close"),
   settingsFields: document.querySelector("#settings-fields"),
@@ -34,15 +59,29 @@ const elements = {
   systemPrompt: document.querySelector("#system-prompt"),
 };
 
-function persist() {
-  saveState(state);
+function persistVault() {
+  if (!uiState.session) {
+    return Promise.resolve();
+  }
+
+  const snapshot = structuredClone(uiState.vault);
+  const { masterKey, userId } = uiState.session;
+  persistQueue = persistQueue
+    .catch(() => {})
+    .then(() => persistUserVault(database, userId, masterKey, snapshot))
+    .catch((error) => {
+      uiState.authMessage = error.message || "Failed to save encrypted vault.";
+      renderAuth();
+    });
+
+  return persistQueue;
 }
 
-function normalizeState() {
-  state.providerKeys = state.providerKeys || {};
-  state.chats = Array.isArray(state.chats) ? state.chats : [];
+function normalizeVault() {
+  uiState.vault.providerKeys = uiState.vault.providerKeys || {};
+  uiState.vault.chats = Array.isArray(uiState.vault.chats) ? uiState.vault.chats : [];
 
-  for (const chat of state.chats) {
+  for (const chat of uiState.vault.chats) {
     const provider = getProviderById(chat.config?.providerId) || getProviderById(catalog.defaultChatConfig.providerId);
     const model = provider?.models.find((entry) => entry.id === chat.config?.modelId) || provider?.models[0];
     const reasoningEffort = model?.reasoningEfforts.includes(chat.config?.reasoningEffort)
@@ -64,40 +103,40 @@ function normalizeState() {
 }
 
 function ensureActiveChat() {
-  if (state.chats.length === 0) {
+  if (uiState.vault.chats.length === 0) {
     const chat = createChat(catalog.defaultChatConfig);
-    state.chats.push(chat);
-    state.activeChatId = chat.id;
-    persist();
+    uiState.vault.chats.push(chat);
+    uiState.vault.activeChatId = chat.id;
+    persistVault();
   }
 
-  if (!state.activeChatId || !state.chats.some((chat) => chat.id === state.activeChatId)) {
-    state.activeChatId = state.chats[0].id;
-    persist();
+  if (!uiState.vault.activeChatId || !uiState.vault.chats.some((chat) => chat.id === uiState.vault.activeChatId)) {
+    uiState.vault.activeChatId = uiState.vault.chats[0].id;
+    persistVault();
   }
 }
 
 function getActiveChat() {
-  return state.chats.find((chat) => chat.id === state.activeChatId) || null;
+  return uiState.vault.chats.find((chat) => chat.id === uiState.vault.activeChatId) || null;
 }
 
 function updateChat(chatId, updater) {
-  const index = state.chats.findIndex((chat) => chat.id === chatId);
+  const index = uiState.vault.chats.findIndex((chat) => chat.id === chatId);
 
   if (index === -1) {
     return;
   }
 
-  const nextChat = updater(structuredClone(state.chats[index]));
+  const nextChat = updater(structuredClone(uiState.vault.chats[index]));
   nextChat.updatedAt = new Date().toISOString();
-  state.chats[index] = nextChat;
-  persist();
+  uiState.vault.chats[index] = nextChat;
+  persistVault();
   render();
 }
 
 function setActiveChat(chatId) {
-  state.activeChatId = chatId;
-  persist();
+  uiState.vault.activeChatId = chatId;
+  persistVault();
   render();
 }
 
@@ -106,7 +145,20 @@ function getModels(providerId) {
 }
 
 function getApiKey(providerId) {
-  return state.providerKeys[providerId] || "";
+  return uiState.vault.providerKeys[providerId] || "";
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function capitalize(value) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function buildStatusLabel(message) {
@@ -121,14 +173,67 @@ function buildStatusLabel(message) {
   return message.status.replaceAll("_", " ");
 }
 
-function renderChatList() {
-  elements.chatCount.textContent = String(state.chats.length);
-  elements.chatList.replaceChildren();
+function setAuthMode(mode) {
+  uiState.authMode = mode;
+  uiState.authMessage = "";
+  renderAuth();
+}
 
-  for (const chat of state.chats) {
+function renderKnownUsers() {
+  const users = listUsers(database);
+  elements.knownUsers.replaceChildren();
+
+  if (users.length === 0) {
+    const copy = document.createElement("p");
+    copy.className = "auth-copy";
+    copy.textContent = "No local users yet. Create the first encrypted workspace.";
+    elements.knownUsers.append(copy);
+    return;
+  }
+
+  for (const username of users) {
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `chat-list__item${chat.id === state.activeChatId ? " chat-list__item--active" : ""}`;
+    button.className = "ghost-button ghost-button--small";
+    button.textContent = username;
+    button.addEventListener("click", () => {
+      uiState.authMode = "login";
+      elements.loginUsername.value = username;
+      elements.loginPassword.focus();
+      renderAuth();
+    });
+    elements.knownUsers.append(button);
+  }
+}
+
+function renderAuth() {
+  const loggedIn = Boolean(uiState.session);
+  elements.authScreen.classList.toggle("auth-screen--hidden", loggedIn);
+  elements.appShell.classList.toggle("shell--hidden", !loggedIn);
+  elements.loginTab.classList.toggle("auth-tab--active", uiState.authMode === "login");
+  elements.registerTab.classList.toggle("auth-tab--active", uiState.authMode === "register");
+  elements.loginForm.hidden = uiState.authMode !== "login";
+  elements.registerForm.hidden = uiState.authMode !== "register";
+  elements.authMessage.textContent = uiState.authMessage;
+  elements.authSubtitle.textContent = uiState.authMode === "login"
+    ? "Unlock your local encrypted vault to access provider keys and chats."
+    : "Create a local user. Your vault key is sealed with your password and never leaves this browser.";
+
+  if (!elements.loginUsername.value && database.lastUsername) {
+    elements.loginUsername.value = database.lastUsername;
+  }
+
+  renderKnownUsers();
+}
+
+function renderChatList() {
+  elements.chatCount.textContent = String(uiState.vault.chats.length);
+  elements.chatList.replaceChildren();
+
+  for (const chat of uiState.vault.chats) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `chat-list__item${chat.id === uiState.vault.activeChatId ? " chat-list__item--active" : ""}`;
     button.innerHTML = `
       <p class="chat-list__title">${escapeHtml(chat.title)}</p>
       <p class="chat-list__meta">${escapeHtml(chat.config.modelId)} · ${escapeHtml(chat.config.reasoningEffort)}</p>
@@ -163,14 +268,19 @@ function renderSettings() {
     const disabled = provider.status !== "active";
     label.innerHTML = `
       <span>${escapeHtml(provider.apiKeyLabel)}${disabled ? " (coming soon)" : ""}</span>
-      <input type="password" ${disabled ? "disabled" : ""} placeholder="${escapeHtml(provider.envKeyName)} fallback works too" value="${escapeHtml(getApiKey(provider.id))}" />
+      <input
+        type="password"
+        ${disabled ? "disabled" : ""}
+        placeholder="${escapeHtml(provider.envKeyName)} fallback works too"
+        value="${escapeHtml(getApiKey(provider.id))}"
+      />
     `;
 
     const input = label.querySelector("input");
     if (!disabled && input) {
-      input.addEventListener("input", (event) => {
-        state.providerKeys[provider.id] = event.target.value.trim();
-        persist();
+      input.addEventListener("change", (event) => {
+        uiState.vault.providerKeys[provider.id] = event.target.value.trim();
+        persistVault();
       });
     }
 
@@ -213,6 +323,7 @@ function renderConfig(chat) {
   elements.systemPrompt.disabled = locked;
   elements.chatLockIndicator.textContent = locked ? "Config locked after first turn" : "Config unlocked";
   elements.chatTitle.textContent = chat.title;
+  elements.currentUsername.textContent = uiState.session?.username || "";
   elements.composerMeta.textContent = `Background mode enabled for ${activeModel?.label || "this chat"}.`;
   elements.cancelButton.hidden = !chat.pendingResponseId;
   elements.cancelButton.disabled = false;
@@ -229,7 +340,7 @@ function renderMessages(chat) {
       <div class="message__meta">
         <span class="message__role">Ready</span>
       </div>
-      <div class="message__body">Set the model, reasoning strength, and system prompt for this chat, then send the first turn. Start a new chat when you want a different model lane.</div>
+      <div class="message__body">Your provider keys are encrypted inside this user's local vault. Configure this chat, then send the first turn.</div>
     `;
     elements.messages.append(emptyState);
     return;
@@ -251,7 +362,11 @@ function renderMessages(chat) {
   elements.messages.scrollTop = elements.messages.scrollHeight;
 }
 
-function render() {
+function renderApp() {
+  if (!uiState.session) {
+    return;
+  }
+
   ensureActiveChat();
   const activeChat = getActiveChat();
   if (!activeChat) {
@@ -265,17 +380,9 @@ function render() {
   renderMessages(activeChat);
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
-}
-
-function capitalize(value) {
-  return value.charAt(0).toUpperCase() + value.slice(1);
+function render() {
+  renderAuth();
+  renderApp();
 }
 
 function updateConfigFromInputs() {
@@ -301,10 +408,14 @@ function updateConfigFromInputs() {
 }
 
 function createNewChat() {
+  if (!uiState.session) {
+    return;
+  }
+
   const chat = createChat(catalog.defaultChatConfig);
-  state.chats.unshift(chat);
-  state.activeChatId = chat.id;
-  persist();
+  uiState.vault.chats.unshift(chat);
+  uiState.vault.activeChatId = chat.id;
+  persistVault();
   render();
   elements.messageInput.focus();
 }
@@ -342,7 +453,7 @@ async function sendMessage(event) {
   event.preventDefault();
 
   const activeChat = getActiveChat();
-  if (!activeChat) {
+  if (!uiState.session || !activeChat) {
     return;
   }
 
@@ -410,7 +521,11 @@ async function sendMessage(event) {
 }
 
 async function pollPendingChats() {
-  for (const chat of state.chats) {
+  if (!uiState.session) {
+    return;
+  }
+
+  for (const chat of uiState.vault.chats) {
     if (!chat.pendingResponseId) {
       continue;
     }
@@ -427,19 +542,27 @@ async function pollPendingChats() {
       });
 
       updateChat(chat.id, (currentChat) => {
-        const pendingAssistant = [...currentChat.messages].reverse().find((message) => message.role === "assistant" && message.responseId === chat.pendingResponseId);
+        const pendingAssistant = [...currentChat.messages]
+          .reverse()
+          .find((message) => message.role === "assistant" && message.responseId === chat.pendingResponseId);
+
         if (pendingAssistant) {
           applyProviderResponse(currentChat, pendingAssistant.id, payload.response);
         }
+
         return currentChat;
       });
     } catch (error) {
       updateChat(chat.id, (currentChat) => {
-        const pendingAssistant = [...currentChat.messages].reverse().find((message) => message.role === "assistant" && message.responseId === chat.pendingResponseId);
+        const pendingAssistant = [...currentChat.messages]
+          .reverse()
+          .find((message) => message.role === "assistant" && message.responseId === chat.pendingResponseId);
+
         if (pendingAssistant) {
           pendingAssistant.error = error.message;
           pendingAssistant.status = "failed";
         }
+
         clearPendingAssistant(currentChat);
         return currentChat;
       });
@@ -451,7 +574,7 @@ async function pollPendingChats() {
 
 async function cancelActiveRun() {
   const activeChat = getActiveChat();
-  if (!activeChat?.pendingResponseId) {
+  if (!uiState.session || !activeChat?.pendingResponseId) {
     return;
   }
 
@@ -463,19 +586,27 @@ async function cancelActiveRun() {
     });
 
     updateChat(activeChat.id, (chat) => {
-      const pendingAssistant = [...chat.messages].reverse().find((message) => message.role === "assistant" && message.responseId === chat.pendingResponseId);
+      const pendingAssistant = [...chat.messages]
+        .reverse()
+        .find((message) => message.role === "assistant" && message.responseId === chat.pendingResponseId);
+
       if (pendingAssistant) {
         applyProviderResponse(chat, pendingAssistant.id, payload.response);
       }
+
       return chat;
     });
   } catch (error) {
     updateChat(activeChat.id, (chat) => {
-      const pendingAssistant = [...chat.messages].reverse().find((message) => message.role === "assistant" && message.responseId === chat.pendingResponseId);
+      const pendingAssistant = [...chat.messages]
+        .reverse()
+        .find((message) => message.role === "assistant" && message.responseId === chat.pendingResponseId);
+
       if (pendingAssistant) {
         pendingAssistant.error = error.message;
         pendingAssistant.status = "failed";
       }
+
       clearPendingAssistant(chat);
       return chat;
     });
@@ -484,7 +615,71 @@ async function cancelActiveRun() {
   }
 }
 
+async function handleRegister(event) {
+  event.preventDefault();
+
+  const username = elements.registerUsername.value.trim();
+  const password = elements.registerPassword.value;
+  const confirmPassword = elements.registerConfirm.value;
+
+  if (password !== confirmPassword) {
+    uiState.authMessage = "Passwords do not match.";
+    renderAuth();
+    return;
+  }
+
+  try {
+    const { session, vault } = await registerUser(database, { username, password });
+    uiState.session = session;
+    uiState.vault = vault;
+    uiState.authMessage = "";
+    normalizeVault();
+    elements.registerForm.reset();
+    elements.loginPassword.value = "";
+    render();
+    pollPendingChats();
+  } catch (error) {
+    uiState.authMessage = error.message;
+    renderAuth();
+  }
+}
+
+async function handleLogin(event) {
+  event.preventDefault();
+
+  const username = elements.loginUsername.value.trim();
+  const password = elements.loginPassword.value;
+
+  try {
+    const { session, vault } = await loginUser(database, { username, password });
+    uiState.session = session;
+    uiState.vault = vault;
+    uiState.authMessage = "";
+    normalizeVault();
+    elements.loginPassword.value = "";
+    render();
+    pollPendingChats();
+  } catch (error) {
+    uiState.authMessage = error.message;
+    renderAuth();
+  }
+}
+
+async function handleLogout() {
+  await persistVault().catch(() => {});
+  uiState.session = null;
+  uiState.vault = createEmptyVault();
+  uiState.authMode = "login";
+  uiState.authMessage = "";
+  render();
+}
+
 function attachEventListeners() {
+  elements.loginTab.addEventListener("click", () => setAuthMode("login"));
+  elements.registerTab.addEventListener("click", () => setAuthMode("register"));
+  elements.loginForm.addEventListener("submit", handleLogin);
+  elements.registerForm.addEventListener("submit", handleRegister);
+  elements.logoutButton.addEventListener("click", handleLogout);
   elements.newChatButton.addEventListener("click", createNewChat);
   elements.composer.addEventListener("submit", sendMessage);
   elements.providerSelect.addEventListener("change", () => {
@@ -500,6 +695,7 @@ function attachEventListeners() {
   elements.modelSelect.addEventListener("change", () => {
     const activeChat = getActiveChat();
     const selectedModel = getModels(elements.providerSelect.value).find((model) => model.id === elements.modelSelect.value);
+
     if (activeChat && selectedModel) {
       elements.reasoningSelect.innerHTML = selectedModel.reasoningEfforts
         .map((effort) => `<option value="${effort}">${escapeHtml(capitalize(effort))}</option>`)
@@ -508,6 +704,7 @@ function attachEventListeners() {
         ? activeChat.config.reasoningEffort
         : selectedModel.reasoningEfforts[0];
     }
+
     updateConfigFromInputs();
   });
   elements.reasoningSelect.addEventListener("change", updateConfigFromInputs);
@@ -523,21 +720,12 @@ function attachEventListeners() {
 
 async function bootstrap() {
   catalog = await fetchCatalog();
-  normalizeState();
-  ensureActiveChat();
   attachEventListeners();
   render();
-  pollPendingChats();
   window.setInterval(pollPendingChats, 2500);
 }
 
 bootstrap().catch((error) => {
-  elements.messages.innerHTML = `
-    <article class="message message--error">
-      <div class="message__meta">
-        <span class="message__role">Startup error</span>
-      </div>
-      <div class="message__body">${escapeHtml(error.message)}</div>
-    </article>
-  `;
+  uiState.authMessage = error.message;
+  renderAuth();
 });

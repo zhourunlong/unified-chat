@@ -1,21 +1,27 @@
-const STORAGE_KEY = "unified-chat-state:v1";
+const STORAGE_KEY = "unified-chat-users:v1";
+const DEFAULT_DATABASE = {
+  users: {},
+  lastUsername: "",
+};
 
-export function loadState(defaultState) {
+export function loadDatabase() {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) {
-      return structuredClone(defaultState);
+      return structuredClone(DEFAULT_DATABASE);
     }
 
+    const parsed = JSON.parse(raw);
     return {
-      ...structuredClone(defaultState),
-      ...JSON.parse(raw),
+      ...structuredClone(DEFAULT_DATABASE),
+      ...parsed,
+      users: parsed?.users || {},
     };
   } catch {
-    return structuredClone(defaultState);
+    return structuredClone(DEFAULT_DATABASE);
   }
 }
 
-export function saveState(state) {
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+export function saveDatabase(database) {
+  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(database));
 }

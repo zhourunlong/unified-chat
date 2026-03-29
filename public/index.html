@@ -7,7 +7,51 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <div class="shell">
+    <section id="auth-screen" class="auth-screen">
+      <div class="auth-card">
+        <p class="eyebrow">Local encrypted access</p>
+        <h1>Unlock unified chat</h1>
+        <p id="auth-subtitle" class="auth-copy"></p>
+
+        <div class="auth-tabs">
+          <button id="login-tab" class="auth-tab auth-tab--active" type="button">Log in</button>
+          <button id="register-tab" class="auth-tab" type="button">Register</button>
+        </div>
+
+        <form id="login-form" class="auth-form">
+          <label class="field">
+            <span>Username</span>
+            <input id="login-username" autocomplete="username" required />
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input id="login-password" type="password" autocomplete="current-password" required />
+          </label>
+          <button class="primary-button" type="submit">Unlock vault</button>
+        </form>
+
+        <form id="register-form" class="auth-form" hidden>
+          <label class="field">
+            <span>Username</span>
+            <input id="register-username" autocomplete="username" required />
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input id="register-password" type="password" autocomplete="new-password" required />
+          </label>
+          <label class="field">
+            <span>Confirm password</span>
+            <input id="register-confirm" type="password" autocomplete="new-password" required />
+          </label>
+          <button class="primary-button" type="submit">Create encrypted user</button>
+        </form>
+
+        <div id="known-users" class="known-users"></div>
+        <p id="auth-message" class="auth-message"></p>
+      </div>
+    </section>
+
+    <div id="app-shell" class="shell shell--hidden">
       <aside class="sidebar">
         <div class="sidebar__brand">
           <div>
@@ -15,6 +59,10 @@
             <h1>Model switchboard</h1>
           </div>
           <button id="settings-toggle" class="ghost-button" type="button">Keys</button>
+        </div>
+        <div class="account-pill">
+          <span id="current-username"></span>
+          <button id="logout-button" class="ghost-button ghost-button--small" type="button">Log out</button>
         </div>
 
         <button id="new-chat-button" class="primary-button" type="button">New chat</button>
@@ -80,13 +128,13 @@
       <aside id="settings-panel" class="settings-panel settings-panel--hidden">
         <div class="settings-panel__header">
           <div>
-            <p class="eyebrow">Local settings</p>
+            <p class="eyebrow">Encrypted local vault</p>
             <h2>API keys</h2>
           </div>
           <button id="settings-close" class="ghost-button" type="button">Close</button>
         </div>
         <p class="settings-panel__note">
-          Keys stay in this browser's local storage and are only sent to the local proxy when a request is made.
+          Keys are stored inside the logged-in user's encrypted local vault and are only sent to the local proxy when a request is made.
         </p>
         <div id="settings-fields" class="settings-fields"></div>
       </aside>
