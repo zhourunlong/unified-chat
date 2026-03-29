@@ -14,6 +14,7 @@ Then open `http://localhost:3000`.
 
 - Provider and model selection happens at the chat level. Once the first turn is sent, the chat config locks to preserve a single model lane for that conversation.
 - GPT chats call `POST /v1/responses` with `background: true`, `store: true`, and `previous_response_id` for multi-turn conversation state.
+- System prompts are not user-configurable. They are defined in the repository per provider/model under `server/prompts/`.
 - Users must register and log in locally before using the app.
 - The local Node server stores encrypted user vault records on disk in `data/vault-store.json` and keeps login state in an HTTP-only cookie-backed persistent session.
 - No plaintext username, password, or API key is written to the vault store. User lookup uses one-way probes derived from the typed username and password, so credential matching does not require decrypting stored usernames or passwords.

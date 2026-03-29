@@ -1,4 +1,5 @@
 import { createHttpError } from "../lib/http.js";
+import { getSystemPrompt } from "../prompts/index.js";
 import { getModelById, getProviderById } from "../../shared/model-catalog.js";
 
 const OPENAI_BASE_URL = "https://api.openai.com/v1/responses";
@@ -128,11 +129,11 @@ export async function createResponse({ apiKey, chatConfig, message, previousResp
     },
     background: true,
     store: true,
+    instructions: getSystemPrompt({
+      modelId: chatConfig.modelId,
+      providerId: chatConfig.providerId,
+    }),
   };
-
-  if (chatConfig.systemPrompt) {
-    body.instructions = chatConfig.systemPrompt;
-  }
 
   if (previousResponseId) {
     body.previous_response_id = previousResponseId;

@@ -61,7 +61,6 @@ const elements = {
   settingsFields: document.querySelector("#settings-fields"),
   settingsPanel: document.querySelector("#settings-panel"),
   settingsToggle: document.querySelector("#settings-toggle"),
-  systemPrompt: document.querySelector("#system-prompt"),
 };
 
 function escapeHtml(value) {
@@ -268,13 +267,10 @@ function renderConfig(chat) {
     ? chat.config.reasoningEffort
     : efforts[0];
 
-  elements.systemPrompt.value = chat.config.systemPrompt || "";
-
   const locked = isChatLocked(chat);
   elements.providerSelect.disabled = locked;
   elements.modelSelect.disabled = locked;
   elements.reasoningSelect.disabled = locked;
-  elements.systemPrompt.disabled = locked;
   elements.chatLockIndicator.textContent = locked ? "Config locked after first turn" : "Config unlocked";
   elements.chatTitle.textContent = chat.title;
   elements.currentUsername.textContent = uiState.session?.username || "";
@@ -286,19 +282,6 @@ function renderConfig(chat) {
 
 function renderMessages(chat) {
   elements.messages.replaceChildren();
-
-  if (chat.messages.length === 0) {
-    const emptyState = document.createElement("article");
-    emptyState.className = "message";
-    emptyState.innerHTML = `
-      <div class="message__meta">
-        <span class="message__role">Ready</span>
-      </div>
-      <div class="message__body">The local server stores this account in a single encrypted vault derived from your username and password. Configure this chat, then send the first turn.</div>
-    `;
-    elements.messages.append(emptyState);
-    return;
-  }
 
   for (const message of chat.messages) {
     const fragment = elements.messageTemplate.content.cloneNode(true);
@@ -355,7 +338,6 @@ function updateConfigFromInputs() {
     chat.config.providerId = elements.providerSelect.value;
     chat.config.modelId = selectedModel?.id || chat.config.modelId;
     chat.config.reasoningEffort = reasoningEffort;
-    chat.config.systemPrompt = elements.systemPrompt.value.trim();
     return chat;
   });
 }
@@ -659,7 +641,6 @@ function attachEventListeners() {
     updateConfigFromInputs();
   });
   elements.reasoningSelect.addEventListener("change", updateConfigFromInputs);
-  elements.systemPrompt.addEventListener("change", updateConfigFromInputs);
   elements.settingsToggle.addEventListener("click", () => {
     elements.settingsPanel.classList.remove("settings-panel--hidden");
   });

@@ -60,7 +60,6 @@ export const DEFAULT_CHAT_CONFIG = {
   providerId: "openai",
   modelId: "gpt-5-mini",
   reasoningEffort: "medium",
-  systemPrompt: "",
 };
 
 export function getProviderById(providerId) {
