@@ -88,6 +88,10 @@ function getModels(providerId) {
   return getProviderById(providerId)?.models || [];
 }
 
+function getProviderCapabilities(providerId) {
+  return getProviderById(providerId)?.capabilities || {};
+}
+
 function getApiKey(providerId) {
   return uiState.vault.providerKeys[providerId] || "";
 }
@@ -133,8 +137,13 @@ function normalizeVault() {
     };
     chat.messages = Array.isArray(chat.messages) ? chat.messages : [];
     chat.isSubmitting = Boolean(chat.isSubmitting);
-    chat.lastResponseId = chat.lastResponseId || null;
-    chat.pendingResponseId = chat.pendingResponseId || null;
+    chat.context = chat.context || null;
+    chat.pendingOperation = chat.pendingOperation || null;
+    chat.pendingOperationId = chat.pendingOperationId || chat.pendingOperation?.id || chat.pendingOperation?.data?.responseId || null;
+    for (const message of chat.messages) {
+      message.operation = message.operation || null;
+      message.operationId = message.operationId || message.operation?.id || message.operation?.data?.responseId || null;
+    }
   }
 }
 
@@ -154,6 +163,19 @@ function ensureActiveChat() {
 
 function getActiveChat() {
   return uiState.vault.chats.find((chat) => chat.id === uiState.vault.activeChatId) || null;
+}
+
+function buildChatHistory(chat) {
+  if (!chat || !Array.isArray(chat.messages)) {
+    return [];
+  }
+
+  return chat.messages
+    .filter((message) => (message.role === "user" || message.role === "assistant") && typeof message.text === "string" && message.text.trim())
+    .map((message) => ({
+      role: message.role,
+      text: message.text.trim(),
+    }));
 }
 
 function requestRender() {
@@ -295,6 +317,7 @@ function renderConfig(chat) {
 
   const activeModel = models.find((model) => model.id === selectedModelId) || models[0];
   const efforts = activeModel?.reasoningEfforts || ["medium"];
+  const capabilities = getProviderCapabilities(chat.config.providerId);
   elements.reasoningSelect.innerHTML = efforts
     .map((effort) => `<option value="${effort}">${escapeHtml(capitalize(effort))}</option>`)
     .join("");
@@ -311,12 +334,14 @@ function renderConfig(chat) {
   elements.chatTitle.textContent = chat.title;
   elements.currentUsername.textContent = uiState.session?.username || "";
   elements.composerMeta.textContent = hasApiKey
-    ? `Background mode enabled for ${activeModel?.label || "this chat"}.`
+    ? (capabilities.responseRetrieval
+      ? `Background mode enabled for ${activeModel?.label || "this chat"}.`
+      : `Streaming enabled for ${activeModel?.label || "this chat"}.`)
     : `Configure the ${getProviderById(chat.config.providerId)?.apiKeyLabel || "API key"} in settings to send messages.`;
-  elements.cancelButton.hidden = !chat.pendingResponseId;
+  elements.cancelButton.hidden = !(chat.isSubmitting || (capabilities.runCancellation && chat.pendingOperation));
   elements.cancelButton.disabled = false;
   elements.messageInput.disabled = !hasApiKey;
-  elements.sendButton.disabled = Boolean(!hasApiKey || chat.isSubmitting || chat.pendingResponseId);
+  elements.sendButton.disabled = Boolean(!hasApiKey || chat.isSubmitting || chat.pendingOperation);
 }
 
 function renderMessages(chat) {
@@ -443,12 +468,14 @@ async function summarizeTitleForChat(chatId, providerId, firstUserMessage) {
   }
 }
 
-function setPendingAssistant(chat, responseId) {
-  chat.pendingResponseId = responseId;
+function setPendingAssistant(chat, operation, operationId) {
+  chat.pendingOperation = operation || null;
+  chat.pendingOperationId = operationId || null;
 }
 
 function clearPendingAssistant(chat) {
-  chat.pendingResponseId = null;
+  chat.pendingOperation = null;
+  chat.pendingOperationId = null;
 }
 
 function applyProviderResponse(chat, placeholderMessageId, providerResponse) {
@@ -457,7 +484,8 @@ function applyProviderResponse(chat, placeholderMessageId, providerResponse) {
     return;
   }
 
-  message.responseId = providerResponse.id;
+  message.operation = providerResponse.operation || message.operation || null;
+  message.operationId = providerResponse.operationId || message.operationId || null;
   message.status = providerResponse.status;
   message.text = providerResponse.text || message.text;
   message.reasoningSummary = providerResponse.reasoningSummary || message.reasoningSummary || "";
@@ -465,11 +493,11 @@ function applyProviderResponse(chat, placeholderMessageId, providerResponse) {
 
   if (providerResponse.isTerminal) {
     clearPendingAssistant(chat);
-    if (!providerResponse.error) {
-      chat.lastResponseId = providerResponse.id;
+    if (!providerResponse.error && providerResponse.context) {
+      chat.context = providerResponse.context;
     }
   } else {
-    setPendingAssistant(chat, providerResponse.id);
+    setPendingAssistant(chat, providerResponse.operation, providerResponse.operationId);
   }
 }
 
@@ -483,7 +511,7 @@ async function sendMessage(event) {
 
   const messageText = elements.messageInput.value.trim();
 
-  if (!hasConfiguredApiKey(activeChat.config.providerId) || !messageText || activeChat.isSubmitting || activeChat.pendingResponseId) {
+  if (!hasConfiguredApiKey(activeChat.config.providerId) || !messageText || activeChat.isSubmitting || activeChat.pendingOperation) {
     return;
   }
 
@@ -501,7 +529,8 @@ async function sendMessage(event) {
     reasoningSummary: "",
     status: "queued",
     error: null,
-    responseId: null,
+    operation: null,
+    operationId: null,
     createdAt: new Date().toISOString(),
   };
   const shouldSummarizeTitle = !activeChat.messages.some((message) => message.role === "user");
@@ -525,8 +554,9 @@ async function sendMessage(event) {
   try {
     const streamResponse = await createProviderResponseStream(activeChat.config.providerId, {
       chatConfig: activeChat.config,
+      context: activeChat.context,
+      history: buildChatHistory(activeChat),
       message: messageText,
-      previousResponseId: activeChat.lastResponseId,
     }, streamController.signal);
 
     const finalResponse = await consumeProviderStream(streamResponse, {
@@ -575,7 +605,7 @@ async function pollPendingChats() {
   }
 
   for (const chat of uiState.vault.chats) {
-    if (!chat.pendingResponseId) {
+    if (!chat.pendingOperation || !chat.pendingOperationId) {
       continue;
     }
 
@@ -583,19 +613,19 @@ async function pollPendingChats() {
       continue;
     }
 
-    const requestKey = `${chat.id}:${chat.pendingResponseId}`;
+    const requestKey = `${chat.id}:${chat.pendingOperationId}`;
     if (pollInFlight.has(requestKey)) {
       continue;
     }
 
     pollInFlight.add(requestKey);
     try {
-      const payload = await retrieveProviderResponse(chat.config.providerId, chat.pendingResponseId);
+      const payload = await retrieveProviderResponse(chat.config.providerId, chat.pendingOperation);
 
       updateChat(chat.id, (currentChat) => {
         const pendingAssistant = [...currentChat.messages]
           .reverse()
-          .find((message) => message.role === "assistant" && message.responseId === chat.pendingResponseId);
+          .find((message) => message.role === "assistant" && message.operationId === chat.pendingOperationId);
 
         if (pendingAssistant) {
           applyProviderResponse(currentChat, pendingAssistant.id, payload.response);
@@ -607,7 +637,7 @@ async function pollPendingChats() {
       updateChat(chat.id, (currentChat) => {
         const pendingAssistant = [...currentChat.messages]
           .reverse()
-          .find((message) => message.role === "assistant" && message.responseId === chat.pendingResponseId);
+          .find((message) => message.role === "assistant" && message.operationId === chat.pendingOperationId);
 
         if (pendingAssistant) {
           pendingAssistant.error = error.message;
@@ -625,19 +655,41 @@ async function pollPendingChats() {
 
 async function cancelActiveRun() {
   const activeChat = getActiveChat();
-  if (!uiState.session || !activeChat?.pendingResponseId) {
+  if (!uiState.session || !activeChat) {
+    return;
+  }
+
+  const capabilities = getProviderCapabilities(activeChat.config.providerId);
+  const controller = streamControllers.get(activeChat.id);
+  const canAbortLocalStream = Boolean(controller);
+  const canCancelProviderRun = Boolean(capabilities.runCancellation && activeChat.pendingOperation && activeChat.pendingOperationId);
+
+  if (!canAbortLocalStream && !canCancelProviderRun) {
     return;
   }
 
   elements.cancelButton.disabled = true;
 
   try {
-    const payload = await cancelProviderResponse(activeChat.config.providerId, activeChat.pendingResponseId);
+    if (canAbortLocalStream) {
+      controller.abort();
+    }
+
+    if (!canCancelProviderRun) {
+      updateChat(activeChat.id, (chat) => {
+        chat.isSubmitting = false;
+        clearPendingAssistant(chat);
+        return chat;
+      });
+      return;
+    }
+
+    const payload = await cancelProviderResponse(activeChat.config.providerId, activeChat.pendingOperation);
 
     updateChat(activeChat.id, (chat) => {
       const pendingAssistant = [...chat.messages]
         .reverse()
-        .find((message) => message.role === "assistant" && message.responseId === chat.pendingResponseId);
+        .find((message) => message.role === "assistant" && message.operationId === chat.pendingOperationId);
 
       if (pendingAssistant) {
         applyProviderResponse(chat, pendingAssistant.id, payload.response);
@@ -649,7 +701,7 @@ async function cancelActiveRun() {
     updateChat(activeChat.id, (chat) => {
       const pendingAssistant = [...chat.messages]
         .reverse()
-        .find((message) => message.role === "assistant" && message.responseId === chat.pendingResponseId);
+        .find((message) => message.role === "assistant" && message.operationId === chat.pendingOperationId);
 
       if (pendingAssistant) {
         pendingAssistant.error = error.message;
@@ -660,7 +712,6 @@ async function cancelActiveRun() {
       return chat;
     });
   } finally {
-    streamControllers.get(activeChat.id)?.abort();
     elements.cancelButton.disabled = false;
   }
 }

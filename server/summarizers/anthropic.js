@@ -1,33 +1,32 @@
 import { getSystemPrompt } from "../prompts/system.js";
 import { SUMMARY_PROMPT, clipSummaryMessage, normalizeSummaryTitle } from "./common.js";
 
-const SUMMARY_MODEL_ID = "gpt-5.4-nano";
+const SUMMARY_MODEL_ID = "claude-haiku-4-5-20251001";
 
-export function getOpenAISummaryConfig() {
+export function getAnthropicSummaryConfig() {
   return {
     modelId: SUMMARY_MODEL_ID,
     reasoningEffort: "none",
   };
 }
 
-export function buildOpenAISummaryRequest(firstUserMessage) {
+export function buildAnthropicSummaryRequest(firstUserMessage) {
   return {
-    instructions: getSystemPrompt("openai", SUMMARY_MODEL_ID),
-    input: [
+    max_tokens: 64,
+    messages: [
       {
         role: "user",
         content: [
           {
-            type: "input_text",
+            type: "text",
             text: `${SUMMARY_PROMPT}${clipSummaryMessage(firstUserMessage)}`,
           },
         ],
       },
     ],
     model: SUMMARY_MODEL_ID,
-    reasoning: {
-      effort: "none",
-    },
-    store: false,
+    system: getSystemPrompt("anthropic", SUMMARY_MODEL_ID),
   };
 }
+
+export { normalizeSummaryTitle };

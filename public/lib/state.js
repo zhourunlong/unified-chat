@@ -12,6 +12,7 @@ export function createEmptyVault() {
 
 export function createChat(config = {}) {
   return {
+    context: null,
     id: crypto.randomUUID(),
     title: "New chat",
     createdAt: new Date().toISOString(),
@@ -21,8 +22,8 @@ export function createChat(config = {}) {
       ...config,
     },
     isSubmitting: false,
-    lastResponseId: null,
-    pendingResponseId: null,
+    pendingOperation: null,
+    pendingOperationId: null,
     messages: [],
   };
 }

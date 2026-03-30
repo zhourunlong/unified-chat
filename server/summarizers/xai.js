@@ -1,19 +1,26 @@
-import { getSystemPrompt } from "../prompts/system.js";
 import { SUMMARY_PROMPT, clipSummaryMessage, normalizeSummaryTitle } from "./common.js";
 
-const SUMMARY_MODEL_ID = "gpt-5.4-nano";
+const SUMMARY_MODEL_ID = "grok-4-fast-reasoning";
 
-export function getOpenAISummaryConfig() {
+export function getXAISummaryConfig() {
   return {
     modelId: SUMMARY_MODEL_ID,
     reasoningEffort: "none",
   };
 }
 
-export function buildOpenAISummaryRequest(firstUserMessage) {
+export function buildXAISummaryRequest(firstUserMessage) {
   return {
-    instructions: getSystemPrompt("openai", SUMMARY_MODEL_ID),
     input: [
+      {
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text: "Summarize the user's message into a short chat title with no extra commentary.",
+          },
+        ],
+      },
       {
         role: "user",
         content: [
@@ -25,9 +32,8 @@ export function buildOpenAISummaryRequest(firstUserMessage) {
       },
     ],
     model: SUMMARY_MODEL_ID,
-    reasoning: {
-      effort: "none",
-    },
     store: false,
   };
 }
+
+export { normalizeSummaryTitle };

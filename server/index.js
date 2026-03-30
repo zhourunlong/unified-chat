@@ -1,15 +1,13 @@
 import http from "node:http";
 import path from "node:path";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { DEFAULT_CHAT_CONFIG, PROVIDERS } from "../shared/model-catalog.js";
 import { requireConfiguredProviderKey } from "./lib/provider-auth.js";
 import { clearCookie, createHttpError, parseCookies, readJsonBody, sendError, sendJson, serveStaticFile, setCookie } from "./lib/http.js";
+import { endSse, writeSseEvent } from "./lib/sse.js";
 import { createSession, createSessionCookie, destroySession, getSession, updateSession } from "./lib/session-store.js";
 import { loginLocalUser, registerLocalUser, saveUserVault } from "./lib/user-store.js";
-import { getProviderHandler } from "./providers/index.js";
-import { getSummarizer } from "./summarizers/index.js";
+import { getProviderCapabilities, getProviderHandler, getProviderModels } from "./providers/index.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, "..");
@@ -47,6 +45,24 @@ async function requireSession(request) {
 async function handleApiRequest(request, response, pathname) {
   if (request.method === "GET" && pathname === "/api/catalog") {
     sendJson(response, 200, buildCatalog());
+    return;
+  }
+
+  const providerModelsMatch = pathname.match(/^\/api\/providers\/([^/]+)\/models$/);
+  if (request.method === "GET" && providerModelsMatch) {
+    const providerId = providerModelsMatch[1];
+    const provider = PROVIDERS.find((entry) => entry.id === providerId);
+
+    if (!provider) {
+      throw createHttpError(404, `Unknown provider '${providerId}'.`);
+    }
+
+    sendJson(response, 200, {
+      capabilities: getProviderCapabilities(providerId),
+      models: getProviderModels(providerId),
+      providerId,
+      providerLabel: provider.label,
+    });
     return;
   }
 
@@ -120,36 +136,14 @@ async function handleApiRequest(request, response, pathname) {
       throw createHttpError(400, "First user message is required.");
     }
 
-    const summarizer = getSummarizer(providerId);
     const provider = getProviderHandler(providerId);
     const apiKey = requireConfiguredProviderKey(providerId, session.vault?.providerKeys?.[providerId]);
-    const summary = await provider.createSummaryResponse({
+    const summary = await provider.summarizeTitle({
       apiKey,
-      body: summarizer.buildRequest(firstUserMessage),
+      firstUserMessage,
     });
 
-    sendJson(response, 200, {
-      modelId: summarizer.config.modelId,
-      reasoningEffort: summarizer.config.reasoningEffort,
-      title: summarizer.normalizeTitle(summary.text),
-    });
-    return;
-  }
-
-  const createMatch = pathname.match(/^\/api\/providers\/([^/]+)\/responses$/);
-  if (request.method === "POST" && createMatch) {
-    const session = await requireSession(request);
-    const body = await readJsonBody(request);
-    const providerId = createMatch[1];
-    const provider = getProviderHandler(providerId);
-    const apiKey = requireConfiguredProviderKey(providerId, session.vault?.providerKeys?.[providerId]);
-    const result = await provider.createResponse({
-      apiKey,
-      chatConfig: body.chatConfig,
-      message: body.message,
-      previousResponseId: body.previousResponseId,
-    });
-    sendJson(response, 200, { response: result });
+    sendJson(response, 200, summary);
     return;
   }
 
@@ -163,60 +157,68 @@ async function handleApiRequest(request, response, pathname) {
     const abortController = new AbortController();
     request.on("close", () => abortController.abort());
 
-    const upstream = await provider.createResponseStream({
+    const stream = provider.streamResponse({
       apiKey,
       chatConfig: body.chatConfig,
+      context: body.context,
+      history: body.history,
       message: body.message,
-      previousResponseId: body.previousResponseId,
       signal: abortController.signal,
     });
 
-    if (!upstream.body) {
-      throw createHttpError(502, "Provider stream did not return a body.");
-    }
-
     response.writeHead(200, {
-      "Content-Type": upstream.headers.get("content-type") || "text/event-stream; charset=utf-8",
+      "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-store",
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
 
     try {
-      await pipeline(Readable.fromWeb(upstream.body), response);
+      for await (const event of stream) {
+        writeSseEvent(response, event);
+      }
+      endSse(response);
     } catch (error) {
-      if (error?.name !== "AbortError" && !response.writableEnded) {
-        response.destroy(error);
+      if (error?.name === "AbortError") {
+        if (!response.writableEnded) {
+          endSse(response);
+        }
+      } else if (!response.writableEnded) {
+        writeSseEvent(response, {
+          type: "response.error",
+          message: error.message || "Provider stream failed.",
+        });
+        endSse(response);
       }
     }
     return;
   }
 
-  const retrieveMatch = pathname.match(/^\/api\/providers\/([^/]+)\/responses\/([^/]+)\/retrieve$/);
+  const retrieveMatch = pathname.match(/^\/api\/providers\/([^/]+)\/responses\/retrieve$/);
   if (request.method === "POST" && retrieveMatch) {
     const session = await requireSession(request);
+    const body = await readJsonBody(request);
     const providerId = retrieveMatch[1];
-    const responseId = retrieveMatch[2];
     const provider = getProviderHandler(providerId);
     const apiKey = requireConfiguredProviderKey(providerId, session.vault?.providerKeys?.[providerId]);
     const result = await provider.retrieveResponse({
       apiKey,
-      responseId,
+      operation: body.operation,
     });
     sendJson(response, 200, { response: result });
     return;
   }
 
-  const cancelMatch = pathname.match(/^\/api\/providers\/([^/]+)\/responses\/([^/]+)\/cancel$/);
+  const cancelMatch = pathname.match(/^\/api\/providers\/([^/]+)\/responses\/cancel$/);
   if (request.method === "POST" && cancelMatch) {
     const session = await requireSession(request);
+    const body = await readJsonBody(request);
     const providerId = cancelMatch[1];
-    const responseId = cancelMatch[2];
     const provider = getProviderHandler(providerId);
     const apiKey = requireConfiguredProviderKey(providerId, session.vault?.providerKeys?.[providerId]);
     const result = await provider.cancelResponse({
       apiKey,
-      responseId,
+      operation: body.operation,
     });
     sendJson(response, 200, { response: result });
     return;

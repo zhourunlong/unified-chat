@@ -74,8 +74,14 @@ export async function summarizeChatTitle(body) {
   return request("/api/chats/summarize-title", body);
 }
 
-export async function createProviderResponse(providerId, body) {
-  return request(`/api/providers/${providerId}/responses`, body);
+export async function fetchProviderModels(providerId) {
+  const response = await fetch(`/api/providers/${providerId}/models`);
+
+  if (!response.ok) {
+    throw new Error(await parseErrorResponse(response));
+  }
+
+  return response.json();
 }
 
 export async function createProviderResponseStream(providerId, body, signal) {
@@ -95,10 +101,10 @@ export async function createProviderResponseStream(providerId, body, signal) {
   return response;
 }
 
-export async function retrieveProviderResponse(providerId, responseId) {
-  return request(`/api/providers/${providerId}/responses/${responseId}/retrieve`, {});
+export async function retrieveProviderResponse(providerId, operation) {
+  return request(`/api/providers/${providerId}/responses/retrieve`, { operation });
 }
 
-export async function cancelProviderResponse(providerId, responseId) {
-  return request(`/api/providers/${providerId}/responses/${responseId}/cancel`, {});
+export async function cancelProviderResponse(providerId, operation) {
+  return request(`/api/providers/${providerId}/responses/cancel`, { operation });
 }

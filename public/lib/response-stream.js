@@ -1,146 +1,5 @@
 const NON_TERMINAL_STATUSES = new Set(["queued", "in_progress"]);
 
-function getContentText(content) {
-  if (!content) {
-    return "";
-  }
-
-  if (typeof content === "string") {
-    return content;
-  }
-
-  if (typeof content.text === "string") {
-    return content.text;
-  }
-
-  if (Array.isArray(content.parts)) {
-    return content.parts.join("");
-  }
-
-  return "";
-}
-
-function extractResponseText(payload) {
-  if (!payload) {
-    return "";
-  }
-
-  if (typeof payload.output_text === "string") {
-    return payload.output_text;
-  }
-
-  const pieces = [];
-  for (const output of payload.output ?? []) {
-    for (const content of output.content ?? []) {
-      const text = getContentText(content);
-      if (text) {
-        pieces.push(text);
-      }
-    }
-  }
-
-  return pieces.join("");
-}
-
-function extractReasoningSummary(payload) {
-  if (!payload) {
-    return "";
-  }
-
-  const summaries = [];
-  const collectText = (entry) => {
-    if (!entry) {
-      return;
-    }
-
-    if (typeof entry === "string") {
-      summaries.push(entry);
-    } else if (typeof entry.text === "string") {
-      summaries.push(entry.text);
-    }
-  };
-
-  const collectArray = (maybeArray) => {
-    if (Array.isArray(maybeArray)) {
-      maybeArray.forEach(collectText);
-    }
-  };
-
-  collectArray(payload.summary);
-  collectArray(payload.reasoning?.summary);
-  collectArray(payload.response?.reasoning?.summary);
-
-  const outputs = payload.output ?? payload.response?.output ?? [];
-  if (Array.isArray(outputs)) {
-    for (const output of outputs) {
-      collectArray(output?.summary);
-      collectArray(output?.reasoning?.summary);
-    }
-  }
-
-  return Array.from(new Set(summaries.map((text) => text?.trim()).filter(Boolean))).join("\n\n");
-}
-
-function applyResponseSnapshot(state, payload) {
-  const snapshot = payload?.response ?? payload;
-
-  if (!snapshot || typeof snapshot !== "object") {
-    return false;
-  }
-
-  let changed = false;
-
-  if (typeof snapshot.id === "string" && snapshot.id !== state.id) {
-    state.id = snapshot.id;
-    changed = true;
-  }
-
-  if (typeof snapshot.status === "string" && snapshot.status !== state.status) {
-    state.status = snapshot.status;
-    state.isTerminal = !NON_TERMINAL_STATUSES.has(snapshot.status);
-    changed = true;
-  }
-
-  if ("background" in snapshot) {
-    const background = Boolean(snapshot.background);
-    if (background !== state.background) {
-      state.background = background;
-      changed = true;
-    }
-  }
-
-  const nextText = extractResponseText(snapshot);
-  if (nextText && nextText !== state.text) {
-    state.text = nextText;
-    changed = true;
-  }
-
-  const nextReasoningSummary = extractReasoningSummary(snapshot);
-  if (nextReasoningSummary && nextReasoningSummary !== state.reasoningSummary) {
-    state.reasoningSummary = nextReasoningSummary;
-    changed = true;
-  }
-
-  if (snapshot.error && snapshot.error !== state.error) {
-    state.error = snapshot.error;
-    changed = true;
-  }
-
-  return changed;
-}
-
-function emitUpdate(onUpdate, state, persist) {
-  onUpdate?.({
-    id: state.id,
-    status: state.status,
-    background: state.background,
-    text: state.text,
-    reasoningSummary: state.reasoningSummary,
-    error: state.error,
-    isTerminal: state.isTerminal,
-  }, { persist });
-}
-
 function createSseReader(onEvent) {
   let buffer = "";
 
@@ -191,53 +50,110 @@ function createSseReader(onEvent) {
   };
 }
 
+function createResponseState() {
+  return {
+    background: false,
+    completedAt: null,
+    context: null,
+    createdAt: null,
+    error: null,
+    incompleteDetails: null,
+    isTerminal: false,
+    model: null,
+    operation: null,
+    operationId: null,
+    reasoningSummary: "",
+    status: "queued",
+    text: "",
+    usage: null,
+  };
+}
+
+function applyResponseSnapshot(state, snapshot) {
+  if (!snapshot || typeof snapshot !== "object") {
+    return false;
+  }
+
+  let changed = false;
+
+  for (const [field, value] of Object.entries(snapshot)) {
+    if (value === undefined) {
+      continue;
+    }
+
+    if (field === "text" || field === "reasoningSummary") {
+      if (typeof value === "string" && value !== state[field]) {
+        state[field] = value;
+        changed = true;
+      }
+      continue;
+    }
+
+    if (value !== state[field]) {
+      state[field] = value;
+      changed = true;
+    }
+  }
+
+  if (typeof snapshot.status === "string") {
+    state.isTerminal = !NON_TERMINAL_STATUSES.has(snapshot.status);
+  }
+
+  return changed;
+}
+
+function emitUpdate(onUpdate, state, persist) {
+  onUpdate?.({
+    background: state.background,
+    completedAt: state.completedAt,
+    context: state.context,
+    createdAt: state.createdAt,
+    error: state.error,
+    incompleteDetails: state.incompleteDetails,
+    isTerminal: state.isTerminal,
+    model: state.model,
+    operation: state.operation,
+    operationId: state.operationId,
+    reasoningSummary: state.reasoningSummary,
+    status: state.status,
+    text: state.text,
+    usage: state.usage,
+  }, { persist });
+}
+
 export async function consumeProviderStream(response, { onUpdate } = {}) {
   if (!response.body) {
     throw new Error("Streaming response body is missing.");
   }
 
-  const state = {
-    id: null,
-    status: "queued",
-    background: false,
-    text: "",
-    reasoningSummary: "",
-    error: null,
-    isTerminal: false,
-  };
-
+  const state = createResponseState();
   const decoder = new TextDecoder();
   const reader = response.body.getReader();
   const sse = createSseReader((payload) => {
-    if (payload?.error || payload?.type === "response.error") {
-      throw new Error(payload?.error?.message || payload?.message || "Responses stream failed.");
+    if (payload?.type === "response.error") {
+      throw new Error(payload.message || "Provider stream failed.");
     }
 
-    const snapshotChanged = applyResponseSnapshot(state, payload);
-    let changed = snapshotChanged;
-    let persist = snapshotChanged && Boolean((payload?.response ?? payload)?.id);
+    let changed = false;
+    let persist = false;
 
-    if (payload?.type === "response.output_text.delta") {
-      const deltaText = typeof payload.delta === "string" ? payload.delta : getContentText(payload.delta);
-      if (deltaText) {
-        state.text += deltaText;
-        changed = true;
-      }
+    if (payload?.type === "response.snapshot" && payload.response) {
+      changed = applyResponseSnapshot(state, payload.response) || changed;
+      persist = Boolean(payload.response.operationId);
     }
 
-    if (payload?.type === "response.output_text.done" && typeof payload.output_text === "string") {
-      if (payload.output_text !== state.text) {
-        state.text = payload.output_text;
-        changed = true;
-      }
+    if (payload?.type === "response.text.delta" && typeof payload.delta === "string") {
+      state.text += payload.delta;
+      changed = true;
     }
 
-    if (payload?.type === "response.reasoning_summary_text.delta" && typeof payload.delta === "string") {
+    if (payload?.type === "response.reasoning.delta" && typeof payload.delta === "string") {
       state.reasoningSummary += payload.delta;
       changed = true;
     }
 
-    if (payload?.type === "response.completed") {
+    if (payload?.type === "response.completed" && payload.response) {
+      changed = applyResponseSnapshot(state, payload.response) || changed;
       state.isTerminal = true;
       persist = true;
     }
@@ -259,12 +175,19 @@ export async function consumeProviderStream(response, { onUpdate } = {}) {
   sse.finish();
   state.isTerminal = !NON_TERMINAL_STATUSES.has(state.status);
   return {
-    id: state.id,
-    status: state.status,
     background: state.background,
-    text: state.text,
-    reasoningSummary: state.reasoningSummary,
+    completedAt: state.completedAt,
+    context: state.context,
+    createdAt: state.createdAt,
     error: state.error,
+    incompleteDetails: state.incompleteDetails,
     isTerminal: state.isTerminal,
+    model: state.model,
+    operation: state.operation,
+    operationId: state.operationId,
+    reasoningSummary: state.reasoningSummary,
+    status: state.status,
+    text: state.text,
+    usage: state.usage,
   };
 }

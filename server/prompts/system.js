@@ -6,8 +6,8 @@ function getTodayLabel() {
   });
 }
 
-export function getOpenAISystemPrompt(modelId) {
-  const model = getModelById("openai", modelId);
+export function getSystemPrompt(providerId, modelId) {
+  const model = getModelById(providerId, modelId);
   const modelLabel = model?.label || modelId;
 
   return [
