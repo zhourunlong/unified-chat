@@ -4,25 +4,25 @@ import { createSseParser } from "../lib/sse.js";
 import { getSystemPrompt } from "../prompts/index.js";
 import { buildGoogleSummaryRequest, getGoogleSummaryConfig, normalizeSummaryTitle } from "../summarizers/google.js";
 import { getModelById, getProviderById } from "../../shared/model-catalog.js";
-import { buildResponseSnapshot, createResponseState, mergeNormalizedResponse } from "./utils.js";
+import { buildResponseSnapshot, createContextToken, createResponseState, readContextToken } from "./utils.js";
 
 const GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
-function mapThinkingBudget(reasoningEffort) {
+function mapThinkingLevel(reasoningEffort) {
+  if (reasoningEffort === "none" || reasoningEffort === "minimal") {
+    return "minimal";
+  }
+
   if (reasoningEffort === "low") {
-    return 256;
+    return "low";
   }
 
   if (reasoningEffort === "medium") {
-    return 1024;
+    return "medium";
   }
 
-  if (reasoningEffort === "high") {
-    return 4096;
-  }
-
-  if (reasoningEffort === "xhigh") {
-    return 8192;
+  if (reasoningEffort === "high" || reasoningEffort === "xhigh") {
+    return "high";
   }
 
   return null;
@@ -44,9 +44,27 @@ function validateChatConfig(chatConfig) {
   }
 }
 
-function buildContents(history, message) {
+function clonePart(part) {
+  const nextPart = {};
+
+  if (typeof part?.text === "string") {
+    nextPart.text = part.text;
+  }
+
+  if (part?.thought === true) {
+    nextPart.thought = true;
+  }
+
+  if (typeof part?.thoughtSignature === "string" && part.thoughtSignature.length > 0) {
+    nextPart.thoughtSignature = part.thoughtSignature;
+  }
+
+  return nextPart;
+}
+
+function buildContents(history) {
   const normalizedHistory = Array.isArray(history) ? history : [];
-  const contents = normalizedHistory
+  return normalizedHistory
     .filter((entry) => (entry.role === "user" || entry.role === "assistant") && typeof entry.text === "string" && entry.text.trim())
     .map((entry) => ({
       role: entry.role === "assistant" ? "model" : "user",
@@ -56,6 +74,18 @@ function buildContents(history, message) {
         },
       ],
     }));
+}
+
+function buildTurnContents({ context, history, message }) {
+  const previousContext = readContextToken(context, "google");
+  const contents = Array.isArray(previousContext?.contents)
+    ? previousContext.contents
+        .filter((entry) => (entry?.role === "user" || entry?.role === "model") && Array.isArray(entry.parts))
+        .map((entry) => ({
+          role: entry.role,
+          parts: entry.parts.map(clonePart),
+        }))
+    : buildContents(history);
 
   contents.push({
     role: "user",
@@ -69,7 +99,7 @@ function buildContents(history, message) {
   return contents;
 }
 
-function buildRequestBody({ chatConfig, history, message }) {
+function buildRequestBody({ chatConfig, context, history, message }) {
   validateChatConfig(chatConfig);
 
   if (typeof message !== "string" || message.trim().length === 0) {
@@ -77,7 +107,7 @@ function buildRequestBody({ chatConfig, history, message }) {
   }
 
   const body = {
-    contents: buildContents(history, message),
+    contents: buildTurnContents({ context, history, message }),
     generationConfig: {},
     systemInstruction: {
       role: "system",
@@ -92,11 +122,11 @@ function buildRequestBody({ chatConfig, history, message }) {
     },
   };
 
-  const thinkingBudget = mapThinkingBudget(chatConfig.reasoningEffort);
-  if (thinkingBudget) {
+  const thinkingLevel = mapThinkingLevel(chatConfig.reasoningEffort);
+  if (thinkingLevel) {
     body.generationConfig.thinkingConfig = {
       includeThoughts: true,
-      thinkingBudget,
+      thinkingLevel,
     };
   }
 
@@ -149,27 +179,69 @@ function extractPartsByThought(response, thought) {
     .join("");
 }
 
-function normalizeResponse(response, state) {
-  return {
-    background: false,
-    completedAt: state?.completedAt || null,
-    context: null,
-    createdAt: state?.createdAt || null,
-    error: null,
-    incompleteDetails: null,
-    isTerminal: state?.isTerminal ?? false,
-    model: state?.model || null,
-    operation: null,
-    operationId: null,
-    reasoningSummary: extractPartsByThought(response, true),
-    status: state?.status || "in_progress",
-    text: extractPartsByThought(response, false),
-    usage: response?.usageMetadata || null,
-  };
+function appendModelPart(state, part) {
+  const text = typeof part?.text === "string" ? part.text : "";
+  const thought = part?.thought === true;
+  const thoughtSignature = typeof part?.thoughtSignature === "string" && part.thoughtSignature.length > 0
+    ? part.thoughtSignature
+    : null;
+
+  if (!text && !thoughtSignature) {
+    return;
+  }
+
+  const previousPart = state.googleModelParts[state.googleModelParts.length - 1];
+  const canMerge = previousPart
+    && Boolean(previousPart.thought) === thought
+    && !previousPart.thoughtSignature
+    && !thoughtSignature;
+
+  if (canMerge) {
+    previousPart.text = `${previousPart.text || ""}${text}`;
+    return;
+  }
+
+  const nextPart = {};
+  if (text) {
+    nextPart.text = text;
+  }
+  if (thought) {
+    nextPart.thought = true;
+  }
+  if (thoughtSignature) {
+    nextPart.thoughtSignature = thoughtSignature;
+  }
+
+  state.googleModelParts.push(nextPart);
 }
 
-function applyChunk(state, response) {
-  return mergeNormalizedResponse(state, normalizeResponse(response, state));
+function buildGoogleContextToken(state) {
+  if (!Array.isArray(state.googleRequestContents)) {
+    return null;
+  }
+
+  const contents = state.googleRequestContents.map((entry) => ({
+    role: entry.role,
+    parts: entry.parts.map(clonePart),
+  }));
+
+  if (state.googleModelParts.length > 0) {
+    contents.push({
+      role: "model",
+      parts: state.googleModelParts.map(clonePart),
+    });
+  } else if (state.text) {
+    contents.push({
+      role: "model",
+      parts: [
+        {
+          text: state.text,
+        },
+      ],
+    });
+  }
+
+  return createContextToken("google", { contents });
 }
 
 export function getCapabilities() {
@@ -180,10 +252,15 @@ export function listModels() {
   return getProviderById("google")?.models || [];
 }
 
-export async function* streamResponse({ apiKey, chatConfig, history, message, signal }) {
+export async function* streamResponse({ apiKey, chatConfig, context, history, message, signal }) {
+  const requestBody = buildRequestBody({ chatConfig, context, history, message });
+  const requestContents = requestBody.contents.map((entry) => ({
+    role: entry.role,
+    parts: entry.parts.map(clonePart),
+  }));
   const response = await googleFetch(
     `/models/${encodeURIComponent(chatConfig.modelId)}:streamGenerateContent?alt=sse`,
-    buildRequestBody({ chatConfig, history, message }),
+    requestBody,
     apiKey,
     signal,
   );
@@ -196,6 +273,8 @@ export async function* streamResponse({ apiKey, chatConfig, history, message, si
   state.status = "in_progress";
   state.model = chatConfig.modelId;
   state.createdAt = new Date().toISOString();
+  state.googleModelParts = [];
+  state.googleRequestContents = requestContents;
 
   const queuedEvents = [{
     type: "response.snapshot",
@@ -204,31 +283,37 @@ export async function* streamResponse({ apiKey, chatConfig, history, message, si
   const decoder = new TextDecoder();
   const reader = response.body.getReader();
   const parser = createSseParser((payload) => {
-    const previousText = state.text;
-    const previousReasoning = state.reasoningSummary;
+    const candidate = extractCandidate(payload);
+    const parts = candidate?.content?.parts || [];
 
-    applyChunk(state, payload);
+    for (const part of parts) {
+      const delta = typeof part?.text === "string" ? part.text : "";
+      if (part?.thought === true) {
+        if (delta) {
+          state.reasoningSummary += delta;
+          queuedEvents.push({
+            type: "response.reasoning.delta",
+            delta,
+          });
+        }
+      } else if (delta) {
+        state.text += delta;
+        queuedEvents.push({
+          type: "response.text.delta",
+          delta,
+        });
+      }
 
-    if (state.text.length > previousText.length) {
-      queuedEvents.push({
-        type: "response.text.delta",
-        delta: state.text.slice(previousText.length),
-      });
-    }
-
-    if (state.reasoningSummary.length > previousReasoning.length) {
-      queuedEvents.push({
-        type: "response.reasoning.delta",
-        delta: state.reasoningSummary.slice(previousReasoning.length),
-      });
+      appendModelPart(state, part);
     }
 
     state.usage = payload?.usageMetadata || state.usage;
-    const finishReason = extractCandidate(payload)?.finishReason;
+    const finishReason = candidate?.finishReason;
     if (finishReason) {
       state.status = "completed";
       state.isTerminal = true;
       state.completedAt = new Date().toISOString();
+      state.context = buildGoogleContextToken(state);
     }
   });
 
@@ -248,6 +333,7 @@ export async function* streamResponse({ apiKey, chatConfig, history, message, si
   state.status = "completed";
   state.isTerminal = true;
   state.completedAt = state.completedAt || new Date().toISOString();
+  state.context = state.context || buildGoogleContextToken(state);
   queuedEvents.push({
     type: "response.completed",
     response: buildResponseSnapshot(state),

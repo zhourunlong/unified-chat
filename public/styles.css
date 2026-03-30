@@ -154,7 +154,7 @@ textarea {
 
 .workspace {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 18px;
   padding: 22px;
   min-width: 0;
@@ -194,6 +194,10 @@ textarea {
   border-radius: 999px;
   border: 1px solid var(--border-strong);
   padding: 0.7rem 1.15rem;
+  min-height: 50px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
   transition: transform 160ms ease, border-color 160ms ease, background 160ms ease;
 }
@@ -242,7 +246,6 @@ textarea {
 }
 
 .sidebar__count,
-.lock-pill,
 .message__status {
   color: var(--muted);
   font-size: 0.82rem;
@@ -287,23 +290,22 @@ textarea {
 }
 
 .chat-list__meta,
-.settings-panel__note,
-.composer__meta {
+.settings-panel__note {
   margin: 6px 0 0;
   color: var(--muted);
   font-size: 0.92rem;
 }
 
-.config-panel {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
-  min-width: 0;
-}
-
 .field {
   display: grid;
   gap: 8px;
+}
+
+.field--compact {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .field span {
@@ -449,6 +451,8 @@ textarea {
 .composer {
   border-top: 1px solid var(--border);
   padding-top: 14px;
+  display: grid;
+  gap: 14px;
 }
 
 .composer textarea {
@@ -465,6 +469,45 @@ textarea {
 .composer__buttons {
   display: flex;
   gap: 10px;
+  justify-content: flex-end;
+  align-items: end;
+  flex-shrink: 0;
+}
+
+.composer__actions {
+  align-items: end;
+}
+
+.composer__controls {
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: end;
+  gap: 12px;
+}
+
+.composer__controls .field--compact span {
+  white-space: nowrap;
+  font-size: 0.84rem;
+}
+
+.composer__controls .field--compact select {
+  width: auto;
+  min-width: 0;
+  height: 50px;
+  padding: 0 0.95rem;
+}
+
+#provider-select {
+  width: 132px;
+}
+
+#model-select {
+  width: 30ch;
+}
+
+#reasoning-select {
+  width: 152px;
 }
 
 .settings-panel {
@@ -523,10 +566,6 @@ textarea {
     overflow: visible;
   }
 
-  .config-panel {
-    grid-template-columns: 1fr;
-  }
-
   .sidebar {
     order: 1;
   }
@@ -538,6 +577,35 @@ textarea {
 
   .message {
     max-width: 100%;
+  }
+
+  .composer__actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .composer__controls {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .composer__controls .field--compact {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .composer__controls .field--compact select,
+  #provider-select,
+  #model-select,
+  #reasoning-select {
+    width: 100%;
+  }
+
+  .composer__buttons {
+    width: 100%;
+    justify-content: flex-end;
   }
 
   .settings-panel {

@@ -1,11 +1,11 @@
 import { SUMMARY_PROMPT, clipSummaryMessage, normalizeSummaryTitle } from "./common.js";
 
-const SUMMARY_MODEL_ID = "gemini-2.5-flash-lite";
+const SUMMARY_MODEL_ID = "gemini-3.1-flash-lite-preview";
 
 export function getGoogleSummaryConfig() {
   return {
     modelId: SUMMARY_MODEL_ID,
-    reasoningEffort: "none",
+    reasoningEffort: "minimal",
   };
 }
 

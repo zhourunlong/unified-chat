@@ -40,10 +40,8 @@ const elements = {
   cancelButton: document.querySelector("#cancel-button"),
   chatCount: document.querySelector("#chat-count"),
   chatList: document.querySelector("#chat-list"),
-  chatLockIndicator: document.querySelector("#chat-lock-indicator"),
   chatTitle: document.querySelector("#chat-title"),
   composer: document.querySelector("#composer"),
-  composerMeta: document.querySelector("#composer-meta"),
   currentUsername: document.querySelector("#current-username"),
   loginForm: document.querySelector("#login-form"),
   loginPassword: document.querySelector("#login-password"),
@@ -317,7 +315,6 @@ function renderConfig(chat) {
 
   const activeModel = models.find((model) => model.id === selectedModelId) || models[0];
   const efforts = activeModel?.reasoningEfforts || ["medium"];
-  const capabilities = getProviderCapabilities(chat.config.providerId);
   elements.reasoningSelect.innerHTML = efforts
     .map((effort) => `<option value="${effort}">${escapeHtml(capitalize(effort))}</option>`)
     .join("");
@@ -330,14 +327,9 @@ function renderConfig(chat) {
   elements.providerSelect.disabled = locked;
   elements.modelSelect.disabled = locked;
   elements.reasoningSelect.disabled = locked;
-  elements.chatLockIndicator.textContent = locked ? "Config locked after first turn" : "Config unlocked";
   elements.chatTitle.textContent = chat.title;
   elements.currentUsername.textContent = uiState.session?.username || "";
-  elements.composerMeta.textContent = hasApiKey
-    ? (capabilities.responseRetrieval
-      ? `Background mode enabled for ${activeModel?.label || "this chat"}.`
-      : `Streaming enabled for ${activeModel?.label || "this chat"}.`)
-    : `Configure the ${getProviderById(chat.config.providerId)?.apiKeyLabel || "API key"} in settings to send messages.`;
+  const capabilities = getProviderCapabilities(chat.config.providerId);
   elements.cancelButton.hidden = !(chat.isSubmitting || (capabilities.runCancellation && chat.pendingOperation));
   elements.cancelButton.disabled = false;
   elements.messageInput.disabled = !hasApiKey;

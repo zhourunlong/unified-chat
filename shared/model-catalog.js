@@ -80,7 +80,7 @@ export const PROVIDERS = [
   {
     id: "google",
     label: "Google",
-    tagline: "Gemini API with streamed content generation",
+    tagline: "Gemini 3 API with streamed content generation",
     status: "active",
     apiKeyLabel: "Google AI API key",
     capabilities: {
@@ -94,22 +94,22 @@ export const PROVIDERS = [
     },
     models: [
       {
-        id: "gemini-2.5-pro",
-        label: "Gemini 2.5 Pro",
-        description: "Google's strongest reasoning model for coding and complex multimodal tasks.",
-        reasoningEfforts: ["none", "low", "medium", "high", "xhigh"],
+        id: "gemini-3.1-pro-preview",
+        label: "Gemini 3.1 Pro Preview",
+        description: "Google's strongest Gemini 3 reasoning model for complex multimodal tasks, coding, and agent workflows.",
+        reasoningEfforts: ["low", "medium", "high"],
       },
       {
-        id: "gemini-2.5-flash",
-        label: "Gemini 2.5 Flash",
-        description: "Balanced Gemini model with strong reasoning and lower latency.",
-        reasoningEfforts: ["none", "low", "medium", "high"],
+        id: "gemini-3-flash-preview",
+        label: "Gemini 3 Flash Preview",
+        description: "Fast Gemini 3 model with Pro-level intelligence, strong reasoning, and lower latency.",
+        reasoningEfforts: ["minimal", "low", "medium", "high"],
       },
       {
-        id: "gemini-2.5-flash-lite",
-        label: "Gemini 2.5 Flash-Lite",
-        description: "Fast, cost-efficient Gemini model for high-frequency requests.",
-        reasoningEfforts: ["none", "low", "medium"],
+        id: "gemini-3.1-flash-lite-preview",
+        label: "Gemini 3.1 Flash-Lite Preview",
+        description: "Google's cost-efficient high-throughput Gemini 3.1 workhorse for chat and production volume.",
+        reasoningEfforts: ["minimal", "low", "medium", "high"],
       },
     ],
   },

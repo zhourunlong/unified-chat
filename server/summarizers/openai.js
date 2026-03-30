@@ -31,3 +31,5 @@ export function buildOpenAISummaryRequest(firstUserMessage) {
     store: false,
   };
 }
+
+export { normalizeSummaryTitle };
