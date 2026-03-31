@@ -1,4 +1,4 @@
-import { SUMMARY_PROMPT, clipSummaryMessage, normalizeSummaryTitle } from "./common.js";
+import { SUMMARY_PROMPT, clipSummaryMessage } from "./common.js";
 
 const SUMMARY_MODEL_ID = "grok-4-fast-reasoning";
 
@@ -35,5 +35,3 @@ export function buildXAISummaryRequest(firstUserMessage) {
     store: false,
   };
 }
-
-export { normalizeSummaryTitle };

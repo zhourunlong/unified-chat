@@ -1,54 +1,6 @@
+import { createSseParser } from "../../shared/sse.js";
+
 const NON_TERMINAL_STATUSES = new Set(["queued", "in_progress"]);
-
-function createSseReader(onEvent) {
-  let buffer = "";
-
-  const flushEvent = (rawEvent) => {
-    if (!rawEvent.trim()) {
-      return;
-    }
-
-    const dataLines = [];
-    for (const line of rawEvent.split(/\r?\n/)) {
-      if (line.startsWith("data:")) {
-        dataLines.push(line.slice(5).trimStart());
-      }
-    }
-
-    if (dataLines.length === 0) {
-      return;
-    }
-
-    const data = dataLines.join("\n");
-    if (data === "[DONE]") {
-      return;
-    }
-
-    onEvent(JSON.parse(data));
-  };
-
-  return {
-    push(chunk) {
-      buffer += chunk;
-
-      while (true) {
-        const separatorIndex = buffer.search(/\r?\n\r?\n/);
-        if (separatorIndex === -1) {
-          break;
-        }
-
-        const rawEvent = buffer.slice(0, separatorIndex);
-        const separatorMatch = buffer.slice(separatorIndex).match(/^\r?\n\r?\n/);
-        buffer = buffer.slice(separatorIndex + (separatorMatch?.[0].length || 2));
-        flushEvent(rawEvent);
-      }
-    },
-    finish() {
-      flushEvent(buffer);
-      buffer = "";
-    },
-  };
-}
 
 function createResponseState() {
   return {
@@ -129,7 +81,7 @@ export async function consumeProviderStream(response, { onUpdate } = {}) {
   const state = createResponseState();
   const decoder = new TextDecoder();
   const reader = response.body.getReader();
-  const sse = createSseReader((payload) => {
+  const sse = createSseParser((payload) => {
     if (payload?.type === "response.error") {
       throw new Error(payload.message || "Provider stream failed.");
     }

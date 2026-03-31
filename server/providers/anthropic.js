@@ -2,9 +2,10 @@ import { createHttpError } from "../lib/http.js";
 import { requireConfiguredProviderKey } from "../lib/provider-auth.js";
 import { createSseParser } from "../lib/sse.js";
 import { getSystemPrompt } from "../prompts/index.js";
-import { buildAnthropicSummaryRequest, getAnthropicSummaryConfig, normalizeSummaryTitle } from "../summarizers/anthropic.js";
-import { getModelById, getProviderById } from "../../shared/model-catalog.js";
-import { buildResponseSnapshot, createResponseState, mergeNormalizedResponse } from "./utils.js";
+import { normalizeSummaryTitle } from "../summarizers/common.js";
+import { buildAnthropicSummaryRequest, getAnthropicSummaryConfig } from "../summarizers/anthropic.js";
+import { getProviderById } from "../../shared/model-catalog.js";
+import { buildResponseSnapshot, createResponseState, mergeNormalizedResponse, validateProviderChatConfig } from "./utils.js";
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1/messages";
 
@@ -36,22 +37,6 @@ function mapThinkingBudget(reasoningEffort) {
   return null;
 }
 
-function validateChatConfig(chatConfig) {
-  const provider = getProviderById(chatConfig.providerId);
-  if (!provider || provider.id !== "anthropic") {
-    throw createHttpError(400, "Unsupported provider configuration.");
-  }
-
-  const model = getModelById(chatConfig.providerId, chatConfig.modelId);
-  if (!model) {
-    throw createHttpError(400, "Unknown model.");
-  }
-
-  if (!model.reasoningEfforts.includes(chatConfig.reasoningEffort)) {
-    throw createHttpError(400, "Unsupported reasoning effort for the selected model.");
-  }
-}
-
 function buildMessages(history, message) {
   const normalizedHistory = Array.isArray(history) ? history : [];
   const messages = normalizedHistory
@@ -80,7 +65,7 @@ function buildMessages(history, message) {
 }
 
 function buildRequestBody({ chatConfig, history, message, stream = false }) {
-  validateChatConfig(chatConfig);
+  validateProviderChatConfig("anthropic", chatConfig);
 
   if (typeof message !== "string" || message.trim().length === 0) {
     throw createHttpError(400, "Message text is required.");

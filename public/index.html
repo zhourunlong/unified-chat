@@ -113,8 +113,16 @@
               </label>
             </div>
             <div class="composer__buttons">
-              <button id="cancel-button" class="ghost-button" type="button" hidden>Cancel run</button>
-              <button id="send-button" class="primary-button" type="submit">Send</button>
+              <button
+                id="composer-action-button"
+                class="primary-button composer__action-button"
+                type="submit"
+                aria-label="Send message"
+                title="Send message"
+              >
+                <span id="composer-action-icon" class="composer__action-icon" aria-hidden="true">&uarr;</span>
+                <span id="composer-action-label" class="visually-hidden">Send message</span>
+              </button>
             </div>
           </div>
         </form>
@@ -138,8 +146,11 @@
     <template id="message-template">
       <article class="message">
         <div class="message__meta">
-          <span class="message__role"></span>
-          <span class="message__status"></span>
+          <div class="message__meta-main">
+            <span class="message__role"></span>
+            <span class="message__status"></span>
+          </div>
+          <div class="message__meta-actions"></div>
         </div>
         <div class="message__body"></div>
       </article>

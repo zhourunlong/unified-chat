@@ -1,6 +1,29 @@
 import { createHttpError } from "../lib/http.js";
+import { getModelById, getProviderById } from "../../shared/model-catalog.js";
 
 export const NON_TERMINAL_STATUSES = new Set(["queued", "in_progress"]);
+
+export function validateProviderChatConfig(providerId, chatConfig) {
+  const provider = getProviderById(chatConfig?.providerId);
+
+  if (!provider || provider.id !== providerId) {
+    throw createHttpError(400, "Unsupported provider configuration.");
+  }
+
+  const model = getModelById(chatConfig.providerId, chatConfig.modelId);
+  if (!model) {
+    throw createHttpError(400, "Unknown model.");
+  }
+
+  if (!model.reasoningEfforts.includes(chatConfig.reasoningEffort)) {
+    throw createHttpError(400, "Unsupported reasoning effort for the selected model.");
+  }
+
+  return {
+    model,
+    provider,
+  };
+}
 
 export function createContextToken(providerId, data) {
   if (!data) {

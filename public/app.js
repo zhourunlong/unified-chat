@@ -13,13 +13,28 @@ import {
 } from "./lib/api.js";
 import { renderMessageContent } from "./lib/markdown.js";
 import { consumeProviderStream } from "./lib/response-stream.js";
-import { createChat, createEmptyVault, isChatLocked } from "./lib/state.js";
+import {
+  appendChildMessage,
+  createChat,
+  createEmptyVault,
+  createSiblingMessage,
+  getActiveLeafMessage,
+  getActiveMessages,
+  getMessageNode,
+  getSiblingMessageIds,
+  isChatLocked,
+  migrateLinearMessagesToTree,
+  normalizeChatTree,
+  selectMessageBranch,
+} from "./lib/state.js";
 
 const pollInFlight = new Set();
 const streamInFlight = new Set();
 const streamControllers = new Map();
+const POLL_INTERVAL_MS = 2500;
 let renderQueued = false;
 let persistQueue = Promise.resolve();
+let pollTimer = null;
 let catalog = {
   providers: [],
   defaultChatConfig: DEFAULT_CHAT_CONFIG,
@@ -28,8 +43,30 @@ let catalog = {
 const uiState = {
   authMessage: "",
   authMode: "login",
+  editing: null,
   session: null,
   vault: createEmptyVault(),
+};
+
+const ACTION_BUTTON_CONTENT = {
+  cancel: {
+    ariaLabel: "Stop response",
+    icon: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <rect x="5" y="5" width="14" height="14" rx="2.5" ry="2.5"></rect>
+      </svg>
+    `,
+    title: "Stop response",
+  },
+  send: {
+    ariaLabel: "Send message",
+    icon: `
+      <svg viewBox="0 0 24 24" focusable="false" aria-hidden="true">
+        <path d="M12 3.75c-.58 0-1.13.24-1.53.67L4.94 10.3c-.79.84-.2 2.2.94 2.2H9.2v4.82a2.8 2.8 0 0 0 5.6 0V12.5h3.32c1.14 0 1.73-1.36.94-2.2l-5.55-5.88c-.4-.43-.95-.67-1.51-.67Z"></path>
+      </svg>
+    `,
+    title: "Send message",
+  },
 };
 
 const elements = {
@@ -37,10 +74,12 @@ const elements = {
   authMessage: document.querySelector("#auth-message"),
   authScreen: document.querySelector("#auth-screen"),
   authSubtitle: document.querySelector("#auth-subtitle"),
-  cancelButton: document.querySelector("#cancel-button"),
   chatCount: document.querySelector("#chat-count"),
   chatList: document.querySelector("#chat-list"),
   chatTitle: document.querySelector("#chat-title"),
+  composerActionButton: document.querySelector("#composer-action-button"),
+  composerActionIcon: document.querySelector("#composer-action-icon"),
+  composerActionLabel: document.querySelector("#composer-action-label"),
   composer: document.querySelector("#composer"),
   currentUsername: document.querySelector("#current-username"),
   loginForm: document.querySelector("#login-form"),
@@ -60,7 +99,6 @@ const elements = {
   registerPassword: document.querySelector("#register-password"),
   registerTab: document.querySelector("#register-tab"),
   registerUsername: document.querySelector("#register-username"),
-  sendButton: document.querySelector("#send-button"),
   markdownItScript: document.querySelector("#markdown-it-script"),
   katexScript: document.querySelector("#katex-script"),
   settingsClose: document.querySelector("#settings-close"),
@@ -115,6 +153,14 @@ function persistVault() {
   return persistQueue;
 }
 
+function clearEditingState({ render: shouldRender = true } = {}) {
+  uiState.editing = null;
+
+  if (shouldRender) {
+    requestRender();
+  }
+}
+
 function normalizeVault() {
   uiState.vault.providerKeys = uiState.vault.providerKeys || {};
   uiState.vault.chats = Array.isArray(uiState.vault.chats) ? uiState.vault.chats : [];
@@ -133,14 +179,20 @@ function normalizeVault() {
       modelId: model?.id || catalog.defaultChatConfig.modelId,
       reasoningEffort,
     };
-    chat.messages = Array.isArray(chat.messages) ? chat.messages : [];
+
+    migrateLinearMessagesToTree(chat);
+    normalizeChatTree(chat);
     chat.isSubmitting = Boolean(chat.isSubmitting);
     chat.context = chat.context || null;
+    chat.pendingMessageId = chat.pendingMessageId || null;
     chat.pendingOperation = chat.pendingOperation || null;
     chat.pendingOperationId = chat.pendingOperationId || chat.pendingOperation?.id || chat.pendingOperation?.data?.responseId || null;
-    for (const message of chat.messages) {
-      message.operation = message.operation || null;
-      message.operationId = message.operationId || message.operation?.id || message.operation?.data?.responseId || null;
+  }
+
+  if (uiState.editing) {
+    const activeChat = uiState.vault.chats.find((chat) => chat.id === uiState.editing.chatId);
+    if (!activeChat || !getMessageNode(activeChat, uiState.editing.messageId)) {
+      clearEditingState({ render: false });
     }
   }
 }
@@ -163,17 +215,123 @@ function getActiveChat() {
   return uiState.vault.chats.find((chat) => chat.id === uiState.vault.activeChatId) || null;
 }
 
+function getEditingMessage(chat = getActiveChat()) {
+  if (!uiState.editing || !chat || chat.id !== uiState.editing.chatId) {
+    return null;
+  }
+
+  return getMessageNode(chat, uiState.editing.messageId);
+}
+
+function hasEditablePendingState(chat = getActiveChat()) {
+  return Boolean(chat?.isSubmitting || chat?.pendingOperation);
+}
+
+function getActivePendingAssistant(chat) {
+  return chat?.pendingMessageId
+    ? getMessageNode(chat, chat.pendingMessageId)
+    : null;
+}
+
+function getMessageBranchPosition(chat, messageId) {
+  const siblingIds = getSiblingMessageIds(chat, messageId);
+  const siblingIndex = siblingIds.indexOf(messageId);
+
+  return {
+    count: siblingIds.length,
+    index: siblingIndex,
+    siblingIds,
+  };
+}
+
+function setEditingMessage(chatId, messageId) {
+  uiState.editing = { chatId, messageId };
+  requestRender();
+}
+
+function hasPendingOperations() {
+  if (!uiState.session) {
+    return false;
+  }
+
+  return uiState.vault.chats.some((chat) => chat.pendingOperation && chat.pendingOperationId);
+}
+
+function stopPollingPendingChats() {
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer);
+    pollTimer = null;
+  }
+}
+
+function syncPendingChatPolling({ immediate = false } = {}) {
+  const shouldPoll = document.visibilityState === "visible" && hasPendingOperations();
+
+  if (!shouldPoll) {
+    stopPollingPendingChats();
+    return;
+  }
+
+  if (pollTimer === null) {
+    pollTimer = window.setInterval(() => {
+      void pollPendingChats();
+    }, POLL_INTERVAL_MS);
+  }
+
+  if (immediate) {
+    void pollPendingChats();
+  }
+}
+
 function buildChatHistory(chat) {
-  if (!chat || !Array.isArray(chat.messages)) {
+  if (!chat) {
     return [];
   }
 
-  return chat.messages
+  return getActiveMessages(chat)
     .filter((message) => (message.role === "user" || message.role === "assistant") && typeof message.text === "string" && message.text.trim())
     .map((message) => ({
       role: message.role,
       text: message.text.trim(),
     }));
+}
+
+function getRequestContext(chat) {
+  const activeMessages = getActiveMessages(chat);
+  let contextIndex = -1;
+
+  for (let index = activeMessages.length - 1; index >= 0; index -= 1) {
+    if (activeMessages[index]?.context) {
+      contextIndex = index;
+      break;
+    }
+  }
+
+  if (contextIndex === -1) {
+    return null;
+  }
+
+  const trailingMessages = activeMessages
+    .slice(contextIndex + 1)
+    .filter((message, index, list) => {
+      const isTrailingPlaceholder = index === list.length - 1
+        && message.role === "assistant"
+        && message.status === "queued"
+        && !message.text
+        && !message.operationId;
+
+      return !isTrailingPlaceholder;
+    });
+
+  if (trailingMessages.length === 0) {
+    return activeMessages[contextIndex].context;
+  }
+
+  if (trailingMessages.length === 1 && trailingMessages[0].role === "user") {
+    return activeMessages[contextIndex].context;
+  }
+
+  return null;
 }
 
 function requestRender() {
@@ -203,6 +361,8 @@ function mutateChat(chatId, updater, { persist = true, render: shouldRender = tr
     persistVault();
   }
 
+  syncPendingChatPolling();
+
   if (shouldRender) {
     requestRender();
   }
@@ -213,6 +373,9 @@ function updateChat(chatId, updater) {
 }
 
 function setActiveChat(chatId) {
+  if (uiState.editing?.chatId && uiState.editing.chatId !== chatId) {
+    clearEditingState({ render: false });
+  }
   uiState.vault.activeChatId = chatId;
   persistVault();
   render();
@@ -296,6 +459,60 @@ function renderSettings() {
   }
 }
 
+function createMessageControlButton(label, onClick, { disabled = false, title = label } = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "message__control-button";
+  button.textContent = label;
+  button.title = title;
+  button.disabled = disabled;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function handleEditMessage(chatId, messageId) {
+  const chat = uiState.vault.chats.find((entry) => entry.id === chatId);
+  const message = chat ? getMessageNode(chat, messageId) : null;
+
+  if (!chat || !message || hasEditablePendingState(chat)) {
+    return;
+  }
+
+  uiState.vault.activeChatId = chatId;
+  setEditingMessage(chatId, messageId);
+  elements.messageInput.value = message.text || "";
+  elements.messageInput.focus();
+}
+
+function handleSwitchMessageSibling(chatId, messageId, direction) {
+  const chat = uiState.vault.chats.find((entry) => entry.id === chatId);
+  if (!chat || hasEditablePendingState(chat)) {
+    return;
+  }
+
+  const { count, index, siblingIds } = getMessageBranchPosition(chat, messageId);
+  if (count <= 1 || index === -1) {
+    return;
+  }
+
+  const nextIndex = index + direction;
+  if (nextIndex < 0 || nextIndex >= count) {
+    return;
+  }
+
+  const previousScrollTop = elements.messages.scrollTop;
+  if (!selectMessageBranch(chat, siblingIds[nextIndex])) {
+    return;
+  }
+
+  clearEditingState({ render: false });
+  if (uiState.vault.activeChatId !== chatId) {
+    uiState.vault.activeChatId = chatId;
+  }
+  persistVault();
+  render({ preserveScrollTop: previousScrollTop, scrollToBottom: false });
+}
+
 function renderConfig(chat) {
   const providerOptions = catalog.providers
     .filter((provider) => provider.status === "active")
@@ -324,22 +541,40 @@ function renderConfig(chat) {
 
   const locked = isChatLocked(chat);
   const hasApiKey = hasConfiguredApiKey(chat.config.providerId);
+  const capabilities = getProviderCapabilities(chat.config.providerId);
+  const hasPendingRun = Boolean(chat.isSubmitting || chat.pendingOperation);
+  const canCancelRun = Boolean(
+    streamControllers.has(chat.id)
+    || (capabilities.runCancellation && chat.pendingOperation && chat.pendingOperationId),
+  );
+  const actionMode = hasPendingRun ? "cancel" : "send";
+  const actionContent = ACTION_BUTTON_CONTENT[actionMode];
+  const editingMessage = getEditingMessage(chat);
+  const canEditHistory = !hasPendingRun;
+  const requiresApiKey = !editingMessage || editingMessage.role === "user";
+
   elements.providerSelect.disabled = locked;
   elements.modelSelect.disabled = locked;
   elements.reasoningSelect.disabled = locked;
   elements.chatTitle.textContent = chat.title;
   elements.currentUsername.textContent = uiState.session?.username || "";
-  const capabilities = getProviderCapabilities(chat.config.providerId);
-  elements.cancelButton.hidden = !(chat.isSubmitting || (capabilities.runCancellation && chat.pendingOperation));
-  elements.cancelButton.disabled = false;
-  elements.messageInput.disabled = !hasApiKey;
-  elements.sendButton.disabled = Boolean(!hasApiKey || chat.isSubmitting || chat.pendingOperation);
+  elements.messageInput.disabled = (requiresApiKey && !hasApiKey) || (Boolean(editingMessage) && !canEditHistory);
+  elements.messageInput.placeholder = editingMessage
+    ? `Edit ${editingMessage.role} message and create a new branch`
+    : "Send a message";
+  elements.composerActionButton.setAttribute("aria-label", actionContent.ariaLabel);
+  elements.composerActionButton.title = actionContent.title;
+  elements.composerActionButton.disabled = actionMode === "send"
+    ? Boolean((requiresApiKey && !hasApiKey) || chat.isSubmitting || chat.pendingOperation || (editingMessage && !canEditHistory))
+    : !canCancelRun;
+  elements.composerActionIcon.innerHTML = actionContent.icon;
+  elements.composerActionLabel.textContent = actionContent.ariaLabel;
 }
 
-function renderMessages(chat) {
+function renderMessages(chat, { preserveScrollTop = null, scrollToBottom = true } = {}) {
   elements.messages.replaceChildren();
 
-  for (const message of chat.messages) {
+  for (const message of getActiveMessages(chat)) {
     const fragment = elements.messageTemplate.content.cloneNode(true);
     const node = fragment.querySelector(".message");
     node.classList.add(`message--${message.role}`);
@@ -348,8 +583,48 @@ function renderMessages(chat) {
     }
     fragment.querySelector(".message__role").textContent = capitalize(message.role);
     fragment.querySelector(".message__status").textContent = buildStatusLabel(message);
+    const metaActions = fragment.querySelector(".message__meta-actions");
     const messageBody = fragment.querySelector(".message__body");
     messageBody.innerHTML = renderMessageContent(message.error || message.text || "");
+
+    const siblingPosition = getMessageBranchPosition(chat, message.id);
+    if (siblingPosition.count > 1) {
+      const branchControls = document.createElement("div");
+      branchControls.className = "message__branch-controls";
+      branchControls.append(
+        createMessageControlButton("←", () => {
+          handleSwitchMessageSibling(chat.id, message.id, -1);
+        }, {
+          disabled: hasEditablePendingState(chat) || siblingPosition.index <= 0,
+          title: "Previous sibling branch",
+        }),
+      );
+
+      const position = document.createElement("span");
+      position.className = "message__branch-position";
+      position.textContent = `${siblingPosition.index + 1}/${siblingPosition.count}`;
+      branchControls.append(position);
+
+      branchControls.append(
+        createMessageControlButton("→", () => {
+          handleSwitchMessageSibling(chat.id, message.id, 1);
+        }, {
+          disabled: hasEditablePendingState(chat) || siblingPosition.index >= siblingPosition.count - 1,
+          title: "Next sibling branch",
+        }),
+      );
+
+      metaActions.append(branchControls);
+    }
+
+    metaActions.append(
+      createMessageControlButton("Edit", () => {
+        handleEditMessage(chat.id, message.id);
+      }, {
+        disabled: hasEditablePendingState(chat),
+        title: "Edit this node and create a sibling branch",
+      }),
+    );
 
     const shouldShowReasoning = message.role === "assistant" && (
       message.reasoningSummary ||
@@ -373,10 +648,17 @@ function renderMessages(chat) {
     elements.messages.append(fragment);
   }
 
-  elements.messages.scrollTop = elements.messages.scrollHeight;
+  if (typeof preserveScrollTop === "number") {
+    elements.messages.scrollTop = preserveScrollTop;
+    return;
+  }
+
+  if (scrollToBottom) {
+    elements.messages.scrollTop = elements.messages.scrollHeight;
+  }
 }
 
-function renderApp() {
+function renderApp(options) {
   if (!uiState.session) {
     return;
   }
@@ -390,12 +672,12 @@ function renderApp() {
   renderChatList();
   renderSettings();
   renderConfig(activeChat);
-  renderMessages(activeChat);
+  renderMessages(activeChat, options);
 }
 
-function render() {
+function render(options) {
   renderAuth();
-  renderApp();
+  renderApp(options);
 }
 
 function updateConfigFromInputs() {
@@ -424,6 +706,8 @@ function createNewChat() {
     return;
   }
 
+  clearEditingState({ render: false });
+  elements.messageInput.value = "";
   const chat = createChat(catalog.defaultChatConfig);
   uiState.vault.chats.unshift(chat);
   uiState.vault.activeChatId = chat.id;
@@ -444,7 +728,7 @@ async function summarizeTitleForChat(chatId, providerId, firstUserMessage) {
     }
 
     updateChat(chatId, (chat) => {
-      const firstUserEntry = chat.messages.find((message) => message.role === "user");
+      const firstUserEntry = getActiveMessages(chat).find((message) => message.role === "user");
       if (!firstUserEntry || firstUserEntry.text !== firstUserMessage) {
         return chat;
       }
@@ -460,18 +744,8 @@ async function summarizeTitleForChat(chatId, providerId, firstUserMessage) {
   }
 }
 
-function setPendingAssistant(chat, operation, operationId) {
-  chat.pendingOperation = operation || null;
-  chat.pendingOperationId = operationId || null;
-}
-
-function clearPendingAssistant(chat) {
-  chat.pendingOperation = null;
-  chat.pendingOperationId = null;
-}
-
 function applyProviderResponse(chat, placeholderMessageId, providerResponse) {
-  const message = chat.messages.find((entry) => entry.id === placeholderMessageId);
+  const message = getMessageNode(chat, placeholderMessageId);
   if (!message) {
     return;
   }
@@ -484,18 +758,90 @@ function applyProviderResponse(chat, placeholderMessageId, providerResponse) {
   message.error = providerResponse.error?.message || null;
 
   if (providerResponse.isTerminal) {
-    clearPendingAssistant(chat);
+    if (chat.pendingMessageId === placeholderMessageId) {
+      clearPendingAssistant(chat);
+    }
     if (!providerResponse.error && providerResponse.context) {
-      chat.context = providerResponse.context;
+      message.context = providerResponse.context;
     }
   } else {
-    setPendingAssistant(chat, providerResponse.operation, providerResponse.operationId);
+    setPendingAssistant(chat, placeholderMessageId, providerResponse.operation, providerResponse.operationId);
   }
 }
 
-async function sendMessage(event) {
-  event.preventDefault();
+function setPendingAssistant(chat, messageId, operation, operationId) {
+  chat.pendingMessageId = messageId || null;
+  chat.pendingOperation = operation || null;
+  chat.pendingOperationId = operationId || null;
+}
 
+function clearPendingAssistant(chat) {
+  chat.pendingMessageId = null;
+  chat.pendingOperation = null;
+  chat.pendingOperationId = null;
+}
+
+async function runAssistantTurn(chatId, assistantMessageId, requestMessageText) {
+  const activeChat = getActiveChat();
+  if (!uiState.session || !activeChat || activeChat.id !== chatId) {
+    return;
+  }
+
+  const streamController = new AbortController();
+  streamInFlight.add(chatId);
+  streamControllers.set(chatId, streamController);
+
+  try {
+    const streamResponse = await createProviderResponseStream(activeChat.config.providerId, {
+      chatConfig: activeChat.config,
+      context: getRequestContext(activeChat),
+      history: buildChatHistory(activeChat),
+      message: requestMessageText,
+    }, streamController.signal);
+
+    const finalResponse = await consumeProviderStream(streamResponse, {
+      onUpdate(providerResponse, { persist }) {
+        mutateChat(chatId, (chat) => {
+          applyProviderResponse(chat, assistantMessageId, providerResponse);
+          chat.isSubmitting = true;
+          return chat;
+        }, { persist, render: true });
+      },
+    });
+
+    updateChat(chatId, (chat) => {
+      chat.isSubmitting = false;
+      applyProviderResponse(chat, assistantMessageId, finalResponse);
+      return chat;
+    });
+  } catch (error) {
+    if (streamController.signal.aborted) {
+      updateChat(chatId, (chat) => {
+        chat.isSubmitting = false;
+        return chat;
+      });
+      return;
+    }
+
+    updateChat(chatId, (chat) => {
+      chat.isSubmitting = false;
+      const message = getMessageNode(chat, assistantMessageId);
+      if (message) {
+        message.error = error.message;
+        message.status = "failed";
+      }
+      if (chat.pendingMessageId === assistantMessageId) {
+        clearPendingAssistant(chat);
+      }
+      return chat;
+    });
+  } finally {
+    streamInFlight.delete(chatId);
+    streamControllers.delete(chatId);
+  }
+}
+
+async function sendMessage() {
   const activeChat = getActiveChat();
   if (!uiState.session || !activeChat) {
     return;
@@ -507,29 +853,29 @@ async function sendMessage(event) {
     return;
   }
 
-  const userMessage = {
-    id: crypto.randomUUID(),
-    role: "user",
-    text: messageText,
-    status: "",
-    createdAt: new Date().toISOString(),
-  };
-  const assistantMessage = {
-    id: crypto.randomUUID(),
-    role: "assistant",
-    text: "",
-    reasoningSummary: "",
-    status: "queued",
-    error: null,
-    operation: null,
-    operationId: null,
-    createdAt: new Date().toISOString(),
-  };
-  const shouldSummarizeTitle = !activeChat.messages.some((message) => message.role === "user");
+  const shouldSummarizeTitle = !getActiveMessages(activeChat).some((message) => message.role === "user");
+  let assistantMessageId = null;
 
   updateChat(activeChat.id, (chat) => {
     chat.isSubmitting = true;
-    chat.messages.push(userMessage, assistantMessage);
+    const parentMessageId = getActiveLeafMessage(chat)?.id || null;
+    const userMessage = appendChildMessage(chat, parentMessageId, {
+      error: null,
+      isEdited: false,
+      reasoningSummary: "",
+      role: "user",
+      status: "",
+      text: messageText,
+    });
+    const assistantMessage = appendChildMessage(chat, userMessage.id, {
+      error: null,
+      isEdited: false,
+      reasoningSummary: "",
+      role: "assistant",
+      status: "queued",
+      text: "",
+    });
+    assistantMessageId = assistantMessage.id;
     return chat;
   });
 
@@ -538,57 +884,76 @@ async function sendMessage(event) {
   }
 
   elements.messageInput.value = "";
+  await runAssistantTurn(activeChat.id, assistantMessageId, messageText);
+}
 
-  const streamController = new AbortController();
-  streamInFlight.add(activeChat.id);
-  streamControllers.set(activeChat.id, streamController);
+async function submitEditedMessage() {
+  const activeChat = getActiveChat();
+  const editingMessage = getEditingMessage(activeChat);
 
-  try {
-    const streamResponse = await createProviderResponseStream(activeChat.config.providerId, {
-      chatConfig: activeChat.config,
-      context: activeChat.context,
-      history: buildChatHistory(activeChat),
-      message: messageText,
-    }, streamController.signal);
+  if (!uiState.session || !activeChat || !editingMessage || hasEditablePendingState(activeChat)) {
+    return;
+  }
 
-    const finalResponse = await consumeProviderStream(streamResponse, {
-      onUpdate(providerResponse, { persist }) {
-        mutateChat(activeChat.id, (chat) => {
-          applyProviderResponse(chat, assistantMessage.id, providerResponse);
-          chat.isSubmitting = true;
-          return chat;
-        }, { persist, render: true });
-      },
-    });
+  const messageText = elements.messageInput.value.trim();
+  if (!messageText) {
+    return;
+  }
 
-    updateChat(activeChat.id, (chat) => {
-      chat.isSubmitting = false;
-      applyProviderResponse(chat, assistantMessage.id, finalResponse);
+  let createdSiblingId = null;
+  let assistantMessageId = null;
+
+  updateChat(activeChat.id, (chat) => {
+    const targetMessage = getMessageNode(chat, editingMessage.id);
+    if (!targetMessage) {
       return chat;
-    });
-  } catch (error) {
-    if (streamController.signal.aborted) {
-      updateChat(activeChat.id, (chat) => {
-        chat.isSubmitting = false;
-        return chat;
-      });
-      return;
     }
 
-    updateChat(activeChat.id, (chat) => {
-      chat.isSubmitting = false;
-      const message = chat.messages.find((entry) => entry.id === assistantMessage.id);
-      if (message) {
-        message.error = error.message;
-        message.status = "failed";
-      }
-      clearPendingAssistant(chat);
-      return chat;
+    const siblingMessage = createSiblingMessage(chat, targetMessage.id, {
+      error: null,
+      isEdited: true,
+      reasoningSummary: "",
+      role: targetMessage.role,
+      status: "",
+      text: messageText,
     });
-  } finally {
-    streamInFlight.delete(activeChat.id);
-    streamControllers.delete(activeChat.id);
+
+    if (!siblingMessage) {
+      return chat;
+    }
+
+    createdSiblingId = siblingMessage.id;
+
+    if (targetMessage.role === "user") {
+      chat.isSubmitting = true;
+      const assistantMessage = appendChildMessage(chat, siblingMessage.id, {
+        error: null,
+        isEdited: false,
+        reasoningSummary: "",
+        role: "assistant",
+        status: "queued",
+        text: "",
+      });
+      assistantMessageId = assistantMessage.id;
+    }
+
+    return chat;
+  });
+
+  clearEditingState({ render: false });
+  elements.messageInput.value = "";
+
+  if (!createdSiblingId) {
+    render();
+    return;
   }
+
+  if (editingMessage.role === "user" && assistantMessageId) {
+    await runAssistantTurn(activeChat.id, assistantMessageId, messageText);
+    return;
+  }
+
+  render();
 }
 
 async function pollPendingChats() {
@@ -615,9 +980,7 @@ async function pollPendingChats() {
       const payload = await retrieveProviderResponse(chat.config.providerId, chat.pendingOperation);
 
       updateChat(chat.id, (currentChat) => {
-        const pendingAssistant = [...currentChat.messages]
-          .reverse()
-          .find((message) => message.role === "assistant" && message.operationId === chat.pendingOperationId);
+        const pendingAssistant = getActivePendingAssistant(currentChat);
 
         if (pendingAssistant) {
           applyProviderResponse(currentChat, pendingAssistant.id, payload.response);
@@ -627,9 +990,7 @@ async function pollPendingChats() {
       });
     } catch (error) {
       updateChat(chat.id, (currentChat) => {
-        const pendingAssistant = [...currentChat.messages]
-          .reverse()
-          .find((message) => message.role === "assistant" && message.operationId === chat.pendingOperationId);
+        const pendingAssistant = getActivePendingAssistant(currentChat);
 
         if (pendingAssistant) {
           pendingAssistant.error = error.message;
@@ -660,7 +1021,7 @@ async function cancelActiveRun() {
     return;
   }
 
-  elements.cancelButton.disabled = true;
+  elements.composerActionButton.disabled = true;
 
   try {
     if (canAbortLocalStream) {
@@ -679,9 +1040,7 @@ async function cancelActiveRun() {
     const payload = await cancelProviderResponse(activeChat.config.providerId, activeChat.pendingOperation);
 
     updateChat(activeChat.id, (chat) => {
-      const pendingAssistant = [...chat.messages]
-        .reverse()
-        .find((message) => message.role === "assistant" && message.operationId === chat.pendingOperationId);
+      const pendingAssistant = getActivePendingAssistant(chat);
 
       if (pendingAssistant) {
         applyProviderResponse(chat, pendingAssistant.id, payload.response);
@@ -691,9 +1050,7 @@ async function cancelActiveRun() {
     });
   } catch (error) {
     updateChat(activeChat.id, (chat) => {
-      const pendingAssistant = [...chat.messages]
-        .reverse()
-        .find((message) => message.role === "assistant" && message.operationId === chat.pendingOperationId);
+      const pendingAssistant = getActivePendingAssistant(chat);
 
       if (pendingAssistant) {
         pendingAssistant.error = error.message;
@@ -704,8 +1061,29 @@ async function cancelActiveRun() {
       return chat;
     });
   } finally {
-    elements.cancelButton.disabled = false;
+    elements.composerActionButton.disabled = false;
   }
+}
+
+async function handleComposerSubmit(event) {
+  event.preventDefault();
+
+  const activeChat = getActiveChat();
+  if (!uiState.session || !activeChat) {
+    return;
+  }
+
+  if (activeChat.isSubmitting || activeChat.pendingOperation) {
+    await cancelActiveRun();
+    return;
+  }
+
+  if (getEditingMessage(activeChat)) {
+    await submitEditedMessage();
+    return;
+  }
+
+  await sendMessage();
 }
 
 function applyAuthenticatedState(payload) {
@@ -716,7 +1094,10 @@ function applyAuthenticatedState(payload) {
     : null;
   uiState.vault = payload.authenticated ? payload.vault || createEmptyVault() : createEmptyVault();
   uiState.authMessage = "";
+  uiState.editing = null;
+  elements.messageInput.value = "";
   normalizeVault();
+  syncPendingChatPolling({ immediate: true });
   render();
 }
 
@@ -738,7 +1119,6 @@ async function handleRegister(event) {
     applyAuthenticatedState(payload);
     elements.registerForm.reset();
     elements.loginPassword.value = "";
-    pollPendingChats();
   } catch (error) {
     uiState.authMessage = error.message;
     renderAuth();
@@ -755,7 +1135,6 @@ async function handleLogin(event) {
     const payload = await loginUser({ username, password });
     applyAuthenticatedState(payload);
     elements.loginPassword.value = "";
-    pollPendingChats();
   } catch (error) {
     uiState.authMessage = error.message;
     renderAuth();
@@ -774,6 +1153,9 @@ async function handleLogout() {
   uiState.vault = createEmptyVault();
   uiState.authMode = "login";
   uiState.authMessage = "";
+  uiState.editing = null;
+  elements.messageInput.value = "";
+  stopPollingPendingChats();
   render();
 }
 
@@ -786,7 +1168,7 @@ function attachEventListeners() {
   elements.registerForm.addEventListener("submit", handleRegister);
   elements.logoutButton.addEventListener("click", handleLogout);
   elements.newChatButton.addEventListener("click", createNewChat);
-  elements.composer.addEventListener("submit", sendMessage);
+  elements.composer.addEventListener("submit", handleComposerSubmit);
   elements.providerSelect.addEventListener("change", () => {
     const models = getModels(elements.providerSelect.value);
     elements.modelSelect.innerHTML = models
@@ -819,7 +1201,9 @@ function attachEventListeners() {
   elements.settingsClose.addEventListener("click", () => {
     elements.settingsPanel.classList.add("settings-panel--hidden");
   });
-  elements.cancelButton.addEventListener("click", cancelActiveRun);
+  document.addEventListener("visibilitychange", () => {
+    syncPendingChatPolling({ immediate: document.visibilityState === "visible" });
+  });
 }
 
 async function bootstrap() {
@@ -833,7 +1217,7 @@ async function bootstrap() {
   }
   attachEventListeners();
   render();
-  window.setInterval(pollPendingChats, 2500);
+  syncPendingChatPolling();
 }
 
 bootstrap().catch((error) => {

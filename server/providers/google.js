@@ -2,9 +2,10 @@ import { createHttpError } from "../lib/http.js";
 import { requireConfiguredProviderKey } from "../lib/provider-auth.js";
 import { createSseParser } from "../lib/sse.js";
 import { getSystemPrompt } from "../prompts/index.js";
-import { buildGoogleSummaryRequest, getGoogleSummaryConfig, normalizeSummaryTitle } from "../summarizers/google.js";
-import { getModelById, getProviderById } from "../../shared/model-catalog.js";
-import { buildResponseSnapshot, createContextToken, createResponseState, readContextToken } from "./utils.js";
+import { normalizeSummaryTitle } from "../summarizers/common.js";
+import { buildGoogleSummaryRequest, getGoogleSummaryConfig } from "../summarizers/google.js";
+import { getProviderById } from "../../shared/model-catalog.js";
+import { buildResponseSnapshot, createContextToken, createResponseState, readContextToken, validateProviderChatConfig } from "./utils.js";
 
 const GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -26,22 +27,6 @@ function mapThinkingLevel(reasoningEffort) {
   }
 
   return null;
-}
-
-function validateChatConfig(chatConfig) {
-  const provider = getProviderById(chatConfig.providerId);
-  if (!provider || provider.id !== "google") {
-    throw createHttpError(400, "Unsupported provider configuration.");
-  }
-
-  const model = getModelById(chatConfig.providerId, chatConfig.modelId);
-  if (!model) {
-    throw createHttpError(400, "Unknown model.");
-  }
-
-  if (!model.reasoningEfforts.includes(chatConfig.reasoningEffort)) {
-    throw createHttpError(400, "Unsupported reasoning effort for the selected model.");
-  }
 }
 
 function clonePart(part) {
@@ -100,7 +85,7 @@ function buildTurnContents({ context, history, message }) {
 }
 
 function buildRequestBody({ chatConfig, context, history, message }) {
-  validateChatConfig(chatConfig);
+  validateProviderChatConfig("google", chatConfig);
 
   if (typeof message !== "string" || message.trim().length === 0) {
     throw createHttpError(400, "Message text is required.");

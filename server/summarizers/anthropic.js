@@ -1,5 +1,5 @@
 import { getSystemPrompt } from "../prompts/system.js";
-import { SUMMARY_PROMPT, clipSummaryMessage, normalizeSummaryTitle } from "./common.js";
+import { SUMMARY_PROMPT, clipSummaryMessage } from "./common.js";
 
 const SUMMARY_MODEL_ID = "claude-haiku-4-5-20251001";
 
@@ -28,5 +28,3 @@ export function buildAnthropicSummaryRequest(firstUserMessage) {
     system: getSystemPrompt("anthropic", SUMMARY_MODEL_ID),
   };
 }
-
-export { normalizeSummaryTitle };

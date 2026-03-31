@@ -2,7 +2,8 @@ import { createHttpError } from "../lib/http.js";
 import { requireConfiguredProviderKey } from "../lib/provider-auth.js";
 import { createSseParser } from "../lib/sse.js";
 import { getSystemPrompt } from "../prompts/index.js";
-import { getModelById, getProviderById } from "../../shared/model-catalog.js";
+import { normalizeSummaryTitle } from "../summarizers/common.js";
+import { getProviderById } from "../../shared/model-catalog.js";
 import {
   NON_TERMINAL_STATUSES,
   buildResponseSnapshot,
@@ -12,6 +13,7 @@ import {
   mergeNormalizedResponse,
   readContextToken,
   readOperationToken,
+  validateProviderChatConfig,
 } from "./utils.js";
 
 function getContentText(content) {
@@ -102,8 +104,7 @@ export function createResponsesProvider({
   baseUrl,
   buildSummaryRequest,
   getSummaryConfig,
-  normalizeSummaryTitle,
-  supportsReasoning,
+  buildReasoning,
   customizeRequestBody,
   exposeOperation = true,
   headers = (apiKey) => ({
@@ -111,23 +112,6 @@ export function createResponsesProvider({
     "Content-Type": "application/json",
   }),
 }) {
-  function validateChatConfig(chatConfig) {
-    const provider = getProviderById(chatConfig.providerId);
-
-    if (!provider || provider.id !== providerId) {
-      throw createHttpError(400, "Unsupported provider configuration.");
-    }
-
-    const model = getModelById(chatConfig.providerId, chatConfig.modelId);
-    if (!model) {
-      throw createHttpError(400, "Unknown model.");
-    }
-
-    if (!model.reasoningEfforts.includes(chatConfig.reasoningEffort)) {
-      throw createHttpError(400, "Unsupported reasoning effort for the selected model.");
-    }
-  }
-
   function normalizeResponse(response) {
     const responseId = typeof response.id === "string" ? response.id : null;
     const status = response.status || "queued";
@@ -170,7 +154,7 @@ export function createResponsesProvider({
   }
 
   function buildResponseBody({ chatConfig, context, history, message, stream = false }) {
-    validateChatConfig(chatConfig);
+    validateProviderChatConfig(providerId, chatConfig);
 
     if (typeof message !== "string" || message.trim().length === 0) {
       throw createHttpError(400, "Message text is required.");
@@ -198,7 +182,7 @@ export function createResponsesProvider({
       ...(stream ? { stream: true } : {}),
     };
 
-    const reasoning = supportsReasoning?.(chatConfig) ?? {
+    const reasoning = buildReasoning?.(chatConfig) ?? {
       effort: chatConfig.reasoningEffort,
       summary: "auto",
     };

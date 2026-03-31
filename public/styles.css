@@ -245,6 +245,18 @@ textarea {
   padding: 0.5rem 0.8rem;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .sidebar__count,
 .message__status {
   color: var(--muted);
@@ -362,11 +374,50 @@ textarea {
 }
 
 .message__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-bottom: 10px;
+}
+
+.message__meta-main,
+.message__meta-actions,
+.message__branch-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .message__role {
   font-weight: 700;
+}
+
+.message__meta-actions {
+  justify-content: flex-end;
+}
+
+.message__control-button {
+  min-height: 32px;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 250, 242, 0.85);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.message__control-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.message__branch-position {
+  color: var(--muted);
+  font-size: 0.82rem;
+  min-width: 2.6rem;
+  text-align: center;
 }
 
 .message__body {
@@ -472,6 +523,28 @@ textarea {
   justify-content: flex-end;
   align-items: end;
   flex-shrink: 0;
+}
+
+.composer__action-button {
+  min-width: 58px;
+  min-height: 58px;
+  padding: 0;
+}
+
+.composer__action-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  line-height: 0;
+}
+
+.composer__action-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
 }
 
 .composer__actions {

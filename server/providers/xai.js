@@ -1,6 +1,6 @@
-import { buildXAISummaryRequest, getXAISummaryConfig, normalizeSummaryTitle } from "../summarizers/xai.js";
+import { buildXAISummaryRequest, getXAISummaryConfig } from "../summarizers/xai.js";
 import { createResponsesProvider } from "./responses-api.js";
-import { getSystemPrompt } from "../prompts/system.js";
+import { getSystemPrompt } from "../prompts/index.js";
 
 function buildXAIReasoning(chatConfig) {
   if (chatConfig.modelId === "grok-3-mini" && chatConfig.reasoningEffort !== "none") {
@@ -14,7 +14,10 @@ function buildXAIReasoning(chatConfig) {
 }
 
 function customizeXAIRequestBody(body, { chatConfig }) {
-  const systemPrompt = getSystemPrompt("xai", chatConfig.modelId);
+  const systemPrompt = getSystemPrompt({
+    providerId: "xai",
+    modelId: chatConfig.modelId,
+  });
   delete body.instructions;
 
   if (systemPrompt) {
@@ -40,8 +43,7 @@ const xaiProvider = createResponsesProvider({
   baseUrl: "https://api.x.ai/v1/responses",
   buildSummaryRequest: buildXAISummaryRequest,
   getSummaryConfig: getXAISummaryConfig,
-  normalizeSummaryTitle,
-  supportsReasoning: buildXAIReasoning,
+  buildReasoning: buildXAIReasoning,
   customizeRequestBody: customizeXAIRequestBody,
 });
 

@@ -1,28 +1,74 @@
 # Unified Chat
 
-A local-first chat UI for switching between model providers per conversation. OpenAI support is implemented first through the OpenAI Responses API, with background mode enabled so long reasoning runs can be polled and cancelled reliably.
+Unified Chat is a local-first multi-provider chat app. Each conversation is pinned to one provider and model, while the local Node server handles encrypted vault storage, session management, and provider-specific API translation.
 
-## Run
+## What It Does
+
+- Creates chat sessions against OpenAI, Anthropic, Google, and xAI models.
+- Stores chat history and provider API keys inside a per-user encrypted local vault.
+- Streams responses into the browser and preserves provider-specific conversation state when supported.
+- Supports resumable background-style runs for Responses API providers.
+
+## Architecture
+
+The repo is split into three main areas:
+
+- `public/`: browser UI, chat state, streaming consumer, and rendering.
+- `server/`: local HTTP server, auth/session handling, encrypted vault persistence, and provider adapters.
+- `shared/`: model catalog and protocol helpers shared between browser and server.
+
+### Provider Layer
+
+Providers are implemented behind a common handler interface in `server/providers/`.
+
+- OpenAI: Responses API with `background: true`, `store: true`, and `previous_response_id`.
+- xAI: Responses-style API with provider-specific system-message shaping.
+- Anthropic: Messages API with streaming and thinking blocks.
+- Google: Gemini streaming API with provider-managed conversation context.
+
+Responses-based providers share a common transport in `server/providers/responses-api.js`. Provider-specific adapters remain responsible for request shaping and response peculiarities.
+
+## Local Security Model
+
+- Users register and log in locally; there is no third-party auth flow.
+- Vault records are persisted in `data/vault-store.json`.
+- Session state is persisted in `data/session-store.json`.
+- Vault payloads are encrypted with a key derived from `username@password`.
+- Username lookup and credential checks use one-way probes rather than plaintext identifiers.
+- Session cookies are HTTP-only.
+
+This is a local app, not a hardened hosted service. The trust boundary is your local machine and local browser session.
+
+## Chat Behavior
+
+- Provider/model selection happens at the chat level.
+- Once the first user turn is sent, the chat config locks for that conversation.
+- Title summarization is best-effort and runs separately from the main completion flow.
+- Provider capabilities differ by model and transport:
+  - Responses API providers can expose resumable operations.
+  - Google and Anthropic stream directly without a retrievable background operation token.
+
+## Running The App
+
+Requirements:
+
+- Node.js 20+
+
+Start the server:
 
 ```bash
 npm start
 ```
 
-Then open `http://localhost:3000`.
+Then open:
 
-## Current behavior
+```text
+http://127.0.0.1:3000
+```
 
-- Provider and model selection happens at the chat level. Once the first turn is sent, the chat config locks to preserve a single model lane for that conversation.
-- OpenAI chats call `POST /v1/responses` with `background: true`, `store: true`, and `previous_response_id` for multi-turn conversation state.
-- System prompts are not user-configurable. They are defined in the repository per provider/model under `server/prompts/`.
-- Users must register and log in locally before using the app.
-- The local Node server stores encrypted user vault records on disk in `data/vault-store.json` and keeps login state in an HTTP-only cookie-backed persistent session.
-- No plaintext username, password, or API key is written to the vault store. User lookup uses one-way probes derived from the typed username and password, so credential matching does not require decrypting stored usernames or passwords.
-- Each vault payload is encrypted once with a key derived from `username@password`. There is no reversible global vault-encryption layer.
-- API keys must be configured in the logged-in vault before a provider can be used.
-- Claude, Gemini, and Grok are exposed as placeholders in the provider registry so their API modules can be added without replacing the frontend state model.
+## Repo Notes
 
-## Notes
-
-- The browser no longer stores user vaults in local storage.
-- The local proxy does not persist decrypted user keys or transcripts in the browser. Decrypted vault material is retained in the server-side session until logout or session expiry.
+- System prompts live under `server/prompts/`.
+- The browser does not use local storage for vault persistence.
+- The UI polls only when there are pending provider operations to retrieve.
+- There is currently no automated test suite in the repo.
